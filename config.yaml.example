@@ -7,6 +7,11 @@
 #
 # Rule from the Hermes docs: secrets live in .env, everything else lives here.
 # ${VAR} placeholders are substituted from the environment ($VAR is not).
+#
+# HEADS UP: this file is machine-managed. Changing settings in the dashboard
+# (or via `hermes config set`) rewrites it — comments are stripped, keys are
+# reordered and renamed to their canonical form, and keys the writer does not
+# round-trip are dropped. Treat it as seed state, not a document you maintain.
 # ---------------------------------------------------------------------------
 
 model:
@@ -21,9 +26,14 @@ model:
   # The path almost always ends in /v1.
   base_url: "http://100.x.y.z:8000/v1"
 
-  # The model id as that server reports it. Check with:
+  # The main model, as the server reports its id. Check with:
   #   curl -s http://100.x.y.z:8000/v1/models | jq -r '.data[].id'
-  model: "REPLACE_WITH_MODEL_ID"
+  #
+  # The key is "default", NOT "model". Hermes accepts "model:" on read, but
+  # "default" is the canonical name it persists, what the dashboard's "Main
+  # Model" selector writes, and what `hermes config get model.default` reads.
+  # Seeding "model:" leaves the dashboard showing no main model selected.
+  default: "REPLACE_WITH_MODEL_ID"
 
   # Injected from docker-compose.yml. Set LLM_API_KEY=none in .env for a
   # server that does not check the bearer token.
@@ -32,6 +42,11 @@ model:
   # Many self-hosted servers do not advertise their context window. Set it
   # explicitly to whatever you launched the server with, otherwise Hermes
   # cannot size its compression correctly.
+  #
+  # Note: the dashboard drops this key when it rewrites the file after a
+  # "Main Model" change. Re-check it with
+  #   hermes config get model.context_length
+  # after using the UI, and re-add it if it has gone missing.
   context_length: 32768
 
 # Side tasks: vision, context compression, web page extraction, session

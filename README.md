@@ -141,13 +141,18 @@ Edit `/volume1/docker/hermes/data/config.yaml` and set three things under
 model:
   provider: "custom"
   base_url: "http://100.x.y.z:8000/v1"
-  model: "the-id-from-step-1"
+  default: "the-id-from-step-1"
   api_key: "${LLM_API_KEY}"
   context_length: 32768
 ```
 
 `provider: custom` is what tells Hermes to treat `base_url` as a generic
 OpenAI-compatible endpoint instead of routing through a known provider.
+
+The model key is **`default`**, not `model`. Hermes accepts `model:` when
+reading and the CLI works fine with it, but `default` is the canonical name it
+persists and the one the dashboard's "Main Model" selector reads — seed
+`model:` and the UI shows no main model chosen until you pick one by hand.
 
 `api_key: "${LLM_API_KEY}"` is substituted from the container's environment,
 which the compose file populates from your `.env`. Note that Hermes expands
@@ -199,10 +204,7 @@ Confirm Hermes resolved your endpoint rather than a default provider:
 sudo docker exec -it hermes hermes config
 ```
 
-Under `◆ Model` you should see your `base_url` and, as `default`, your model
-id. Don't be alarmed by `hermes config get model.model` reporting *Config key
-not set* — the `model:` key is stored internally as `default`, and the full
-`hermes config` dump is the reliable view.
+Under `◆ Model` you should see your `base_url` and your model id as `default`.
 
 Then smoke-test the whole chain non-interactively with `-z`:
 
@@ -234,6 +236,24 @@ Logs are tee'd to disk as well as stdout:
 ```
 /volume1/docker/hermes/data/logs/gateways/default/current
 ```
+
+### `config.yaml` is machine-managed
+
+Changing anything in the dashboard, or running `hermes config set`, rewrites
+`config.yaml` in place. The rewrite strips every comment, reorders and renames
+keys to their canonical form, and stamps a `_config_version`. Keys the writer
+doesn't round-trip are silently dropped — `model.context_length` is one, so it
+disappears the first time you change the main model in the UI.
+
+Treat the file as seed state rather than something you maintain by hand. After
+any UI change, spot-check what survived:
+
+```bash
+docker exec hermes hermes config get model.context_length
+```
+
+Keep the annotated copy in `config.yaml.example` under version control; that's
+the one with the reasoning in it.
 
 ## Optional: expose Hermes' own OpenAI-compatible API
 
@@ -424,7 +444,7 @@ services — unlike Docker on Linux, where this would need `OLLAMA_HOST=0.0.0.0`
 model:
   provider: "custom"
   base_url: "http://host.docker.internal:11434/v1"
-  model: "deepseek-v4-flash:cloud"
+  default: "deepseek-v4-flash:cloud"
   api_key: "${LLM_API_KEY}"
   context_length: 262144
 ```
