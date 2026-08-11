@@ -189,17 +189,34 @@ Look for the dashboard binding on `0.0.0.0:9119` and no errors about
 http://<nas-ip>:9119
 ```
 
-You'll get a basic-auth prompt — use `DASHBOARD_USER` / `DASHBOARD_PASS`.
+Despite the `BASIC_AUTH` env var names, the dashboard redirects to a `/login`
+form rather than issuing an HTTP auth challenge. Sign in with `DASHBOARD_USER`
+/ `DASHBOARD_PASS`.
 
 Confirm Hermes resolved your endpoint rather than a default provider:
 
 ```bash
-sudo docker exec -it hermes hermes config get model.base_url
 sudo docker exec -it hermes hermes config
 ```
 
-Then send it something real from the dashboard. If the model replies, the
-whole chain is working.
+Under `◆ Model` you should see your `base_url` and, as `default`, your model
+id. Don't be alarmed by `hermes config get model.model` reporting *Config key
+not set* — the `model:` key is stored internally as `default`, and the full
+`hermes config` dump is the reliable view.
+
+Then smoke-test the whole chain non-interactively with `-z`:
+
+```bash
+sudo docker exec hermes hermes -z "What is 17 times 23? Answer with just the number."
+```
+
+A correct answer means container → endpoint → tool loop all work. If you
+configured `auxiliary.vision`, check that path too by dropping a PNG in the
+data folder and asking about it:
+
+```bash
+sudo docker exec hermes hermes -z "Describe the colours in /opt/data/test.png"
+```
 
 ## Day-to-day use
 
@@ -377,6 +394,69 @@ same folder as `docker-compose.yml`, not in `data/`.
   only `/opt/data` unless you mount more. Adding host paths as volumes widens
   that blast radius.
 - Don't forward port 9119 through your router. Reach it over the tailnet.
+
+## Appendix: running on macOS
+
+The compose file is plain Compose v2 with nothing Synology-specific in it, and
+the image publishes `linux/arm64`, so the same stack runs under Docker Desktop.
+Only the values in `.env` change — steps 2, 3 and 6 above are Container Manager
+choreography you can skip in favour of `docker compose up -d`.
+
+```bash
+HERMES_DATA=/Users/you/Development/hermes-docker/data
+PUID=501            # your uid; largely cosmetic under Docker Desktop, which
+PGID=20             # remaps bind-mount ownership via virtiofs
+BIND_ADDR=127.0.0.1 # dashboard on loopback only
+MEM_LIMIT=2G        # must fit inside Docker Desktop's VM allocation
+```
+
+`MEM_LIMIT` is the one that bites: Compose will happily accept a limit larger
+than the VM, and the container gets OOM-killed under load instead of failing at
+start.
+
+### Pointing at Ollama on the same Mac
+
+Ollama binds `127.0.0.1:11434` by default. Docker Desktop for Mac proxies
+`host.docker.internal` from the host side, so it does reach loopback-bound
+services — unlike Docker on Linux, where this would need `OLLAMA_HOST=0.0.0.0`.
+
+```yaml
+model:
+  provider: "custom"
+  base_url: "http://host.docker.internal:11434/v1"
+  model: "deepseek-v4-flash:cloud"
+  api_key: "${LLM_API_KEY}"
+  context_length: 262144
+```
+
+Ollama ignores the bearer token entirely, so `LLM_API_KEY` is a placeholder.
+
+Confirm the model id and that it can call tools — Hermes is unusable without
+tool support, and Ollama will happily serve a model that lacks it:
+
+```bash
+curl -s http://127.0.0.1:11434/v1/models | grep '"id"'
+ollama show <model>          # look for "tools" under Capabilities
+```
+
+If `host.docker.internal` does fail, the fallback is to make Ollama listen
+beyond loopback and use the Mac's LAN address:
+
+```bash
+launchctl setenv OLLAMA_HOST 0.0.0.0
+# then restart Ollama, and set base_url to http://<mac-lan-ip>:11434/v1
+```
+
+Two model-specific things worth checking when you swap models:
+
+- **Context.** Ollama's OpenAI shim reports the model's architectural maximum,
+  which is not necessarily what you want Hermes to use. Hermes compacts at 50%
+  of `context_length`, so setting it to a 1M ceiling means sessions balloon
+  before anything trims them. Cap it deliberately.
+- **Vision.** If your main model has no vision capability, image inputs fail.
+  Route them to one that does via `auxiliary.vision`, rather than leaving it on
+  `auto`. Check with `ollama show <model>`. A local vision model keeps images on
+  your machine; a cloud one handles dense screenshots and charts better.
 
 ## Reference
 
