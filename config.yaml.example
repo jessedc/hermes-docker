@@ -1,0 +1,84 @@
+# ---------------------------------------------------------------------------
+# Hermes Agent configuration
+#
+# Copy this to  <HERMES_DATA>/config.yaml  (e.g. /volume1/docker/hermes/data/
+# config.yaml) BEFORE the first start. Doing so skips the interactive `hermes
+# setup` wizard, which is awkward to run from Container Manager.
+#
+# Rule from the Hermes docs: secrets live in .env, everything else lives here.
+# ${VAR} placeholders are substituted from the environment ($VAR is not).
+# ---------------------------------------------------------------------------
+
+model:
+  # "custom" = any OpenAI-compatible /v1 endpoint.
+  provider: "custom"
+
+  # The machine on your tailnet running vLLM / llama.cpp / LM Studio / Ollama /
+  # LiteLLM / TabbyAPI. Use the raw 100.x.y.z Tailscale address — MagicDNS
+  # names do not resolve inside Synology containers unless you add an
+  # extra_hosts entry in docker-compose.yml.
+  #
+  # The path almost always ends in /v1.
+  base_url: "http://100.x.y.z:8000/v1"
+
+  # The model id as that server reports it. Check with:
+  #   curl -s http://100.x.y.z:8000/v1/models | jq -r '.data[].id'
+  model: "REPLACE_WITH_MODEL_ID"
+
+  # Injected from docker-compose.yml. Set LLM_API_KEY=none in .env for a
+  # server that does not check the bearer token.
+  api_key: "${LLM_API_KEY}"
+
+  # Many self-hosted servers do not advertise their context window. Set it
+  # explicitly to whatever you launched the server with, otherwise Hermes
+  # cannot size its compression correctly.
+  context_length: 32768
+
+# Side tasks: vision, context compression, web page extraction, session
+# titles. "auto" reuses the main model above, which is what you want when
+# there is only one endpoint on the tailnet.
+auxiliary:
+  vision:
+    provider: "auto"
+  compression:
+    provider: "auto"
+    timeout: 120
+  web_extract:
+    provider: "auto"
+    timeout: 360
+  title_generation:
+    enabled: true
+    provider: "auto"
+    timeout: 30
+
+agent:
+  max_turns: 500
+  api_max_retries: 3
+  # none | minimal | low | medium | high — raise only if your model actually
+  # supports a reasoning parameter.
+  reasoning_effort: "none"
+
+# Shell commands run inside this container, under the PUID/PGID you set.
+# They can see /opt/data and nothing else of the NAS unless you mount more.
+terminal:
+  backend: "local"
+  cwd: "/opt/data"
+  timeout: 180
+  persistent_shell: true
+
+memory:
+  memory_enabled: true
+  user_profile_enabled: true
+
+# Self-hosted endpoints are usually slower and smaller than hosted APIs, so
+# compressing earlier than the default keeps sessions responsive.
+compression:
+  enabled: true
+  threshold: 0.50
+  target_ratio: 0.20
+  protect_last_n: 20
+
+updates:
+  # `hermes update` is unsupported in Docker; you update by pulling the image.
+  pre_update_backup: "quick"
+  backup_keep: 5

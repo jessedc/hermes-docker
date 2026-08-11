@@ -1,0 +1,6 @@
+# Real secrets — only the .example files belong in git
+.env
+config.yaml
+
+# Hermes runtime state if the data dir ever lands here
+data/

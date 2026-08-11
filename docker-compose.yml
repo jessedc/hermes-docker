@@ -1,0 +1,105 @@
+# ---------------------------------------------------------------------------
+# Hermes Agent — Synology Container Manager (DSM 7.2.2)
+#
+# Model inference is NOT done here. Hermes talks out to an OpenAI-compatible
+# endpoint running on another machine on the tailnet; that endpoint is
+# configured in  <HERMES_DATA>/config.yaml , not in this file.
+#
+# Secrets and host-specific values come from a  .env  file sitting next to
+# this docker-compose.yml. See .env.example and the README.
+# ---------------------------------------------------------------------------
+
+name: hermes
+
+services:
+  hermes:
+    image: nousresearch/hermes-agent:latest
+    container_name: hermes
+    restart: unless-stopped
+    command: gateway run
+
+    environment:
+      # -- Run as the owner of the bind mount ---------------------------------
+      # DSM bind mounts are owned by a host UID the container cannot chown, so
+      # the runtime must drop to that UID instead of its default 10000.
+      # Find yours over SSH with:  id
+      PUID: "${PUID:?set PUID in .env — run 'id -u' on the NAS}"
+      PGID: "${PGID:?set PGID in .env — run 'id -g' on the NAS}"
+
+      TZ: "${TZ:-UTC}"
+
+      # -- Web dashboard (port 9119) -----------------------------------------
+      # Bound to 0.0.0.0 so it is reachable from the LAN/tailnet. Hermes fails
+      # closed on a non-loopback bind unless an auth provider is configured,
+      # so basic auth below is mandatory, not optional.
+      HERMES_DASHBOARD: "1"
+      HERMES_DASHBOARD_HOST: "0.0.0.0"
+      HERMES_DASHBOARD_PORT: "9119"
+      HERMES_DASHBOARD_BASIC_AUTH_USERNAME: "${DASHBOARD_USER:?set DASHBOARD_USER in .env}"
+      HERMES_DASHBOARD_BASIC_AUTH_PASSWORD: "${DASHBOARD_PASS:?set DASHBOARD_PASS in .env}"
+      # Keeps dashboard sessions valid across container restarts.
+      HERMES_DASHBOARD_BASIC_AUTH_SECRET: "${DASHBOARD_SECRET:?set DASHBOARD_SECRET in .env}"
+
+      # -- Credentials for the tailnet inference endpoint ---------------------
+      # config.yaml refers to this as ${LLM_API_KEY}. Use "none" for a local
+      # vLLM / llama.cpp / Ollama server that does not check the bearer token.
+      LLM_API_KEY: "${LLM_API_KEY:-none}"
+
+      # -- Hermes' own OpenAI-compatible API server (port 8642) ---------------
+      # Off by default. This is Hermes *serving* an API, which is separate from
+      # the upstream endpoint it consumes. To enable: set this to "true",
+      # uncomment the three lines below plus the 8642 port mapping, and put an
+      # API_SERVER_KEY of 32+ chars in .env (openssl rand -hex 32).
+      API_SERVER_ENABLED: "false"
+      # API_SERVER_HOST: "0.0.0.0"
+      # API_SERVER_PORT: "8642"
+      # API_SERVER_KEY: "${API_SERVER_KEY:?set API_SERVER_KEY in .env}"
+
+    ports:
+      # Change the left side to "100.x.y.z:9119" to publish on the NAS's
+      # Tailscale address only. See "Locking the ports down" in the README.
+      - "${BIND_ADDR:-0.0.0.0}:9119:9119"     # dashboard
+      # - "${BIND_ADDR:-0.0.0.0}:8642:8642"   # Hermes API server (if enabled)
+
+    volumes:
+      # Everything Hermes owns — config.yaml, .env, SOUL.md, sessions,
+      # memories, skills, logs. The image itself is stateless.
+      - "${HERMES_DATA:-/volume1/docker/hermes/data}:/opt/data"
+
+      # Optional, ADVANCED: lets the agent drive the NAS's own Docker daemon.
+      # This is equivalent to giving the agent root on the NAS. Leave it off
+      # unless you specifically want that.
+      # - /var/run/docker.sock:/var/run/docker.sock
+
+    # MagicDNS names do not resolve inside containers on Synology, because the
+    # Tailscale package does not rewrite the container resolver. Prefer a raw
+    # 100.x.y.z address in config.yaml. If you want to use the name anyway,
+    # pin it here:
+    # extra_hosts:
+    #   - "llm.your-tailnet.ts.net:100.x.y.z"
+
+    # Uncomment only if you use the browser-automation toolset.
+    # shm_size: 1gb
+
+    healthcheck:
+      # The dashboard answers 401 until you authenticate, which still proves
+      # the process is up — so this deliberately does not use curl -f.
+      test: ["CMD-SHELL", "curl -s -o /dev/null http://127.0.0.1:9119/ || exit 1"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+
+    stop_grace_period: 30s
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    deploy:
+      resources:
+        limits:
+          memory: "${MEM_LIMIT:-4G}"
+          cpus: "${CPU_LIMIT:-2.0}"
