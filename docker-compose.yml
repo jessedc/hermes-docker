@@ -42,7 +42,7 @@ services:
 
       # -- Credentials for the tailnet inference endpoint ---------------------
       # config.yaml refers to this as ${LLM_API_KEY}. Use "none" for a local
-      # vLLM / llama.cpp / Ollama server that does not check the bearer token.
+      # llama.cpp / vLLM server that does not check the bearer token.
       LLM_API_KEY: "${LLM_API_KEY:-none}"
 
       # -- Hermes' own OpenAI-compatible API server (port 8642) ---------------

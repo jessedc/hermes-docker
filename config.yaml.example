@@ -18,16 +18,17 @@ model:
   # "custom" = any OpenAI-compatible /v1 endpoint.
   provider: "custom"
 
-  # The machine on your tailnet running vLLM / llama.cpp / LM Studio / Ollama /
-  # LiteLLM / TabbyAPI. Use the raw 100.x.y.z Tailscale address — MagicDNS
-  # names do not resolve inside Synology containers unless you add an
-  # extra_hosts entry in docker-compose.yml.
+  # The machine on your tailnet running llama.cpp / vLLM / LM Studio /
+  # LiteLLM / TabbyAPI — here, the DGX Spark serving llama.cpp on :8080. Use
+  # the raw 100.x.y.z Tailscale address — MagicDNS names do not resolve inside
+  # Synology containers unless you add an extra_hosts entry in
+  # docker-compose.yml.
   #
   # The path almost always ends in /v1.
-  base_url: "http://100.x.y.z:8000/v1"
+  base_url: "http://100.x.y.z:8080/v1"
 
   # The main model, as the server reports its id. Check with:
-  #   curl -s http://100.x.y.z:8000/v1/models | jq -r '.data[].id'
+  #   curl -s http://100.x.y.z:8080/v1/models | jq -r '.data[].id'
   #
   # The key is "default", NOT "model". Hermes accepts "model:" on read, but
   # "default" is the canonical name it persists, what the dashboard's "Main
@@ -41,7 +42,8 @@ model:
 
   # Many self-hosted servers do not advertise their context window. Set it
   # explicitly to whatever you launched the server with, otherwise Hermes
-  # cannot size its compression correctly.
+  # cannot size its compression correctly. llama.cpp does report it:
+  #   curl -s http://100.x.y.z:8080/v1/models | jq '.data[].meta.n_ctx'
   #
   # Note: the dashboard drops this key when it rewrites the file after a
   # "Main Model" change. Re-check it with
@@ -52,6 +54,19 @@ model:
 # Side tasks: vision, context compression, web page extraction, session
 # titles. "auto" reuses the main model above, which is what you want when
 # there is only one endpoint on the tailnet.
+#
+# Vision is the one worth spelling out. "auto" only routes images to the main
+# model if Hermes believes that model is vision-capable, and a locally-served
+# GGUF carries no capability metadata for it to consult. Check the server with
+#   curl -s http://100.x.y.z:8080/props | jq '.modalities'
+# and if it reports "vision": true, name the model explicitly instead:
+#
+#   vision:
+#     provider: "custom"
+#     model: "same id as model.default above"
+#     base_url: "http://100.x.y.z:8080/v1"
+#     api_key: "${LLM_API_KEY}"
+#     timeout: 180
 auxiliary:
   vision:
     provider: "auto"

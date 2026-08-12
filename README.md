@@ -9,10 +9,10 @@ endpoint on another machine on your tailnet.
    │                                         │
    │   Synology NAS                          │
    │   ┌───────────────────────┐             │
-   │   │ container: hermes     │             │      GPU box / mini PC
-   │   │  gateway + dashboard  │──── HTTP ──────►  vLLM / llama.cpp /
-   │   │  :9119 dashboard      │  /v1/chat/  │     Ollama / LiteLLM
-   │   │  :8642 API (optional) │  completions│     :8000
+   │   │ container: hermes     │             │      DGX Spark / GPU box
+   │   │  gateway + dashboard  │──── HTTP ──────►  llama.cpp / vLLM /
+   │   │  :9119 dashboard      │  /v1/chat/  │     LiteLLM
+   │   │  :8642 API (optional) │  completions│     :8080
    │   └──────────┬────────────┘             │
    │              │ bind mount               │
    │   /volume1/docker/hermes/data           │
@@ -434,49 +434,82 @@ MEM_LIMIT=2G        # must fit inside Docker Desktop's VM allocation
 than the VM, and the container gets OOM-killed under load instead of failing at
 start.
 
-### Pointing at Ollama on the same Mac
+### Pointing at the DGX Spark over the tailnet
 
-Ollama binds `127.0.0.1:11434` by default. Docker Desktop for Mac proxies
-`host.docker.internal` from the host side, so it does reach loopback-bound
-services — unlike Docker on Linux, where this would need `OLLAMA_HOST=0.0.0.0`.
+This is the setup actually in use: Hermes under Docker Desktop on the Mac, with
+inference on a DGX Spark (`edgexpert-7b1e`, NVIDIA GB10) running llama.cpp on
+port 8080, reached over the tailnet.
+
+Docker Desktop routes container traffic to `100.x.y.z` addresses through the
+host, so this needs no `host.docker.internal` indirection and no special network
+mode. Prove that from inside a container before configuring anything, because a
+working `curl` on the Mac does not prove the container can get there:
+
+```bash
+docker run --rm curlimages/curl -s -o /dev/null -w '%{http_code}\n' \
+  http://100.x.y.z:8080/v1/models          # want 200
+```
+
+Then ask the server what it is. `/v1/models` gives the id and the context window
+it was launched with; `/props` gives the modalities:
+
+```bash
+curl -s http://100.x.y.z:8080/v1/models | jq '.data[] | {id, n_ctx: .meta.n_ctx}'
+curl -s http://100.x.y.z:8080/props    | jq '.modalities'
+```
+
+A multimodal GGUF answers `{"vision": true, "video": true, "audio": false}`,
+which means one model covers both text and images:
 
 ```yaml
 model:
   provider: "custom"
-  base_url: "http://host.docker.internal:11434/v1"
-  default: "deepseek-v4-flash:cloud"
+  base_url: "http://100.x.y.z:8080/v1"
+  default: "unsloth/Muse-Glimmer-30B-GGUF:UD-Q6_K_XL"
   api_key: "${LLM_API_KEY}"
-  context_length: 262144
+  context_length: 131072
+
+auxiliary:
+  vision:
+    provider: "custom"
+    model: "unsloth/Muse-Glimmer-30B-GGUF:UD-Q6_K_XL"
+    base_url: "http://100.x.y.z:8080/v1"
+    api_key: "${LLM_API_KEY}"
+    timeout: 180
 ```
 
-Ollama ignores the bearer token entirely, so `LLM_API_KEY` is a placeholder.
+Spell the vision block out rather than leaving it on `provider: auto`. `auto`
+reuses the main model, which is the right endpoint here, but it depends on
+Hermes deciding that model is vision-capable — and a locally-served GGUF carries
+no capability metadata for it to consult. Being explicit removes the guess. The
+other `auxiliary` slots can stay on `auto`; they follow the main model.
 
-Confirm the model id and that it can call tools — Hermes is unusable without
-tool support, and Ollama will happily serve a model that lacks it:
+llama.cpp only checks the bearer token when started with `--api-key`, so
+`LLM_API_KEY=none` is an ignored placeholder here. Keep it non-empty regardless
+— an empty key can trip client-side validation before a request is even sent.
+
+Take `context_length` from the server's own `n_ctx`, not the model's
+architectural maximum. Hermes compacts at 50% of this value, so an inflated
+number means sessions balloon before anything trims them.
+
+Verify both paths through the container rather than against the server:
 
 ```bash
-curl -s http://127.0.0.1:11434/v1/models | grep '"id"'
-ollama show <model>          # look for "tools" under Capabilities
+docker exec hermes hermes -z 'Reply with exactly: SPARK OK'
+docker exec hermes hermes -z 'Use your vision capability on /opt/data/workspace/test.png. Reply with only the shape and its colour.'
 ```
 
-If `host.docker.internal` does fail, the fallback is to make Ollama listen
-beyond loopback and use the Mac's LAN address:
+Use an image whose answer you already know — a flat coloured shape on white is
+enough to tell a working vision path from a plausible hallucination.
+
+One operational note: llama.cpp serves `total_slots: 1` unless told otherwise,
+so requests queue instead of running in parallel. A vision call landing during a
+long generation waits its turn, which reads as a hang if you aren't expecting
+it. Check what the server is chewing on with:
 
 ```bash
-launchctl setenv OLLAMA_HOST 0.0.0.0
-# then restart Ollama, and set base_url to http://<mac-lan-ip>:11434/v1
+curl -s http://100.x.y.z:8080/slots | jq '.[0] | {is_processing, n_prompt_tokens}'
 ```
-
-Two model-specific things worth checking when you swap models:
-
-- **Context.** Ollama's OpenAI shim reports the model's architectural maximum,
-  which is not necessarily what you want Hermes to use. Hermes compacts at 50%
-  of `context_length`, so setting it to a 1M ceiling means sessions balloon
-  before anything trims them. Cap it deliberately.
-- **Vision.** If your main model has no vision capability, image inputs fail.
-  Route them to one that does via `auxiliary.vision`, rather than leaving it on
-  `auto`. Check with `ollama show <model>`. A local vision model keeps images on
-  your machine; a cloud one handles dense screenshots and charts better.
 
 ## Reference
 
