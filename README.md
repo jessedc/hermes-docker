@@ -1,8 +1,11 @@
 # Hermes Agent on Synology DSM 7.2.2
 
-Runs the [Hermes Agent](https://hermes-agent.nousresearch.com/) container under
-Synology **Container Manager**, with inference served by an OpenAI-compatible
-endpoint on another machine on your tailnet.
+This document tells you how to operate the
+[Hermes Agent](https://hermes-agent.nousresearch.com/) container with Synology
+**Container Manager**. A different machine on your tailnet does the inference.
+That machine gives an OpenAI-compatible endpoint.
+
+This document uses ASD-STE100 Simplified Technical English.
 
 ```
    ┌──────────────── tailnet ────────────────┐
@@ -19,92 +22,97 @@ endpoint on another machine on your tailnet.
    └─────────────────────────────────────────┘
 ```
 
-Everything Hermes owns lives in one bind-mounted folder. The image is
-stateless, so upgrading is just a re-pull.
+All the Hermes data is in one bind-mounted folder. The image holds no data.
+Thus you make an update when you pull the image again.
 
-## What's here
+## Files in this project
 
-| File                  | Goes where                                    |
+| File                  | Location                                      |
 | --------------------- | --------------------------------------------- |
 | `docker-compose.yml`  | project folder (`/volume1/docker/hermes/`)    |
 | `.env.example`        | copy to `.env` in the project folder          |
 | `config.yaml.example` | copy to `config.yaml` in the **data** folder  |
 
-## Prerequisites
+## Necessary conditions
 
-- DSM 7.2.2 with **Container Manager** installed (Package Center).
-- SSH enabled on the NAS: _Control Panel → Terminal & SNMP → Enable SSH_. You
-  need it once for setup and it's the only comfortable way to use the Hermes
-  CLI later.
-- The **Tailscale** package installed on the NAS and logged in, or subnet
-  routing to the inference host. Containers in bridge mode reach `100.x.y.z`
-  addresses through the host's routing table, so no special network mode is
-  needed.
-- A reachable OpenAI-compatible server, and its model id.
-- ~4 GB RAM free. Hermes itself is light; the model isn't running here.
+Before you start, make sure that you have these items:
 
-`nousresearch/hermes-agent:latest` publishes `linux/amd64` and `linux/arm64`,
-so both Intel and ARM Synology models that can run Container Manager are
-covered.
+- DSM 7.2.2 with the **Container Manager** package (from Package Center).
+- SSH on the NAS: _Control Panel → Terminal & SNMP → Enable SSH_. You use SSH
+  one time for the installation. Subsequently, SSH is the most easy method to
+  use the Hermes CLI.
+- The **Tailscale** package on the NAS, with a login. As an alternative, use a
+  subnet route to the inference host. Containers in bridge mode get access to
+  `100.x.y.z` addresses through the routing table of the host. Thus you do not
+  need a special network mode.
+- An OpenAI-compatible server that you can get access to, and its model id.
+- 4 GB of free RAM. Hermes is small. The model does not operate on the NAS.
 
-## 1. Verify the endpoint from the NAS first
+The image `nousresearch/hermes-agent:latest` has a `linux/amd64` version and a
+`linux/arm64` version. Thus it operates on the Intel models and on the ARM
+models of the Synology range that can run Container Manager.
 
-Do this before touching Container Manager. If it fails here, nothing else will
-work, and you'll be debugging the wrong layer.
+## 1. Do a test of the endpoint from the NAS
 
-SSH into the NAS and run:
+Do this test before you use Container Manager. If this test fails, all the
+subsequent procedures also fail. You will then examine the incorrect layer.
+
+Start an SSH session to the NAS and give this command:
 
 ```bash
 curl -s http://100.x.y.z:8000/v1/models | head -40
 ```
 
-You want a JSON body with a `data` array. Note the `id` field — that string is
-what goes into `model:` in `config.yaml`, exactly as printed.
+The reply must be a JSON body with a `data` array. Make a record of the `id`
+field. That value goes into `model:` in the `config.yaml` file. Do not change
+the characters.
 
-If your server requires a token:
+If your server needs a token, give this command:
 
 ```bash
 curl -s -H "Authorization: Bearer YOUR_TOKEN" http://100.x.y.z:8000/v1/models
 ```
 
-Two common failure modes:
+Two failures are usual:
 
-- **Connection refused / no route** — the inference server is bound to
-  `127.0.0.1` on its own host. Rebind it to `0.0.0.0` or to its Tailscale
-  address, and check the tailnet ACLs allow the NAS to reach it.
-- **404** — your base URL needs (or must not have) the `/v1` suffix. Whatever
-  path makes `/models` work is what `base_url` should point at.
+- **Connection refused, or no route.** The inference server has a connection to
+  `127.0.0.1` on its own host. Change the connection to `0.0.0.0`, or to the
+  Tailscale address of that host. Then make sure that the tailnet ACLs let the
+  NAS get access.
+- **404.** Your base URL has an incorrect `/v1` suffix, or it has no `/v1`
+  suffix. Find the path that makes `/models` operate. Point `base_url` at that
+  path.
 
-Use the raw `100.x.y.z` address, not a MagicDNS name. See
-[Tailnet DNS](#tailnet-dns) for why.
+Use the `100.x.y.z` address. Do not use a MagicDNS name. Refer to
+[Tailnet DNS](#tailnet-dns) for the reason.
 
-## 2. Create the folders
+## 2. Make the folders
 
-Still over SSH:
+Use the same SSH session:
 
 ```bash
 sudo mkdir -p /volume1/docker/hermes/data
 sudo chown -R "$(id -u):$(id -g)" /volume1/docker/hermes
-id     # note the uid= and gid= values, you need them in a moment
+id     # make a record of the uid= and gid= values, you need them subsequently
 ```
 
-Adjust `/volume1` if your shared folder lives on another volume. The `docker`
-shared folder is created by Container Manager; if it doesn't exist, make it in
-_Control Panel → Shared Folder_ first.
+Change `/volume1` if your shared folder is on a different volume. Container
+Manager makes the `docker` shared folder. If that folder does not exist, make
+it in _Control Panel → Shared Folder_ first.
 
-## 3. Drop the files in
+## 3. Copy the files to the NAS
 
-Copy `docker-compose.yml` and `.env.example` into
-`/volume1/docker/hermes/`, and `config.yaml.example` into
-`/volume1/docker/hermes/data/`. File Station works, or `scp` from your Mac:
+Copy `docker-compose.yml` and `.env.example` to `/volume1/docker/hermes/`.
+Copy `config.yaml.example` to `/volume1/docker/hermes/data/`. You can use File
+Station, or `scp` from your Mac:
 
 ```bash
 scp docker-compose.yml .env.example you@nas:/volume1/docker/hermes/
 scp config.yaml.example you@nas:/volume1/docker/hermes/data/
 ```
 
-Then rename them on the NAS. File Station struggles with dot-files, so do this
-over SSH:
+Then change the names of the files on the NAS. File Station does not show
+dot-files correctly. Thus use SSH:
 
 ```bash
 cd /volume1/docker/hermes
@@ -113,28 +121,30 @@ mv data/config.yaml.example data/config.yaml
 chmod 600 .env
 ```
 
-## 4. Fill in `.env`
+## 4. Fill in the `.env` file
 
-Edit `/volume1/docker/hermes/.env`:
+Edit `/volume1/docker/hermes/.env` and set these values:
 
-- `PUID` / `PGID` — the `uid=` and `gid=` from step 2. **Don't guess these.**
-  The container drops to a non-root user, and if it doesn't match the mount's
-  owner it can't write to `/opt/data` and the gateway won't start.
-- `DASHBOARD_USER` / `DASHBOARD_PASS` / `DASHBOARD_SECRET` — required. The
-  dashboard is bound to `0.0.0.0`, and Hermes refuses to start a non-loopback
-  dashboard with no auth provider configured. Generate the two secrets with
+- `PUID` and `PGID`. Use the `uid=` and `gid=` values from step 2. **Do not
+  guess these values.** The container changes to a non-root user. If that user
+  is not the owner of the mount, the container cannot write to `/opt/data`.
+  Then the gateway does not start.
+- `DASHBOARD_USER`, `DASHBOARD_PASS` and `DASHBOARD_SECRET`. These values are
+  necessary. The dashboard binds to `0.0.0.0`. Hermes does not start a
+  non-loopback dashboard if it has no auth provider. Make the two secrets with
   `openssl rand -base64 24` and `openssl rand -hex 32`.
-- `LLM_API_KEY` — the bearer token for your endpoint, or `none`.
-- `HERMES_DATA` — only if your path differs from
+- `LLM_API_KEY`. This is the bearer token for your endpoint. If your endpoint
+  has no token, write `none`.
+- `HERMES_DATA`. Set this value only if your path is different from
   `/volume1/docker/hermes/data`.
 
-Every one of these is referenced with `:?` in the compose file, so a missing
-value fails the deploy with a named error rather than starting something
-half-configured.
+The compose file refers to each of these values with `:?`. Thus a value that is
+not set stops the deployment with a named error. The system does not start with
+an incomplete configuration.
 
 ## 5. Point `config.yaml` at your endpoint
 
-Edit `/volume1/docker/hermes/data/config.yaml` and set three things under
+Edit `/volume1/docker/hermes/data/config.yaml`. Set these three values below
 `model:`:
 
 ```yaml
@@ -146,149 +156,160 @@ model:
   context_length: 32768
 ```
 
-`provider: custom` is what tells Hermes to treat `base_url` as a generic
-OpenAI-compatible endpoint instead of routing through a known provider.
+`provider: custom` tells Hermes to use `base_url` as a general
+OpenAI-compatible endpoint. Hermes then does not send the requests to a known
+provider.
 
-The model key is **`default`**, not `model`. Hermes accepts `model:` when
-reading and the CLI works fine with it, but `default` is the canonical name it
-persists and the one the dashboard's "Main Model" selector reads — seed
-`model:` and the UI shows no main model chosen until you pick one by hand.
+The key for the model is **`default`**. It is not `model`. Hermes reads
+`model:` correctly, and the CLI operates with it. But `default` is the
+canonical name. Hermes writes `default` to the file, and the "Main Model"
+selector of the dashboard reads that name. If you write `model:`, the dashboard
+shows no main model until you select one manually.
 
-`api_key: "${LLM_API_KEY}"` is substituted from the container's environment,
-which the compose file populates from your `.env`. Note that Hermes expands
-`${VAR}` but **not** bare `$VAR`; an unset variable is left in place verbatim
-and logged as a warning.
+Hermes replaces `${LLM_API_KEY}` with the value from the environment of the
+container. The compose file gets that value from your `.env` file. Hermes
+expands `${VAR}`, but it does **not** expand `$VAR`. If a variable has no
+value, Hermes keeps the text and writes a warning to the log.
 
-Set `context_length` to whatever you actually launched the inference server
-with. Self-hosted servers often don't advertise it, and if Hermes guesses high
-you'll get truncation errors mid-session instead of clean compaction.
+Set `context_length` to the value that you gave to the inference server at
+start. Many self-hosted servers do not give this value. If the Hermes estimate
+is too large, you get truncation errors during a session. Correct compaction
+does not occur.
 
-Writing this file up front is what lets you skip `hermes setup`, the
-interactive wizard that normally collects API keys on first run.
+If you write this file before the first start, you do not have to run `hermes
+setup`. `hermes setup` is the interactive wizard that collects the API keys at
+the first start.
 
-## 6. Create the project in Container Manager
+## 6. Make the project in Container Manager
 
 1. Open **Container Manager → Project → Create**.
-2. **Project name:** `hermes`
-3. **Path:** browse to `/volume1/docker/hermes` (the folder, not `data`).
-4. Container Manager detects the existing `docker-compose.yml` and offers to
-   use it. Accept.
-5. Click through the web-portal wizard without configuring anything — you
-   don't need a reverse proxy entry yet.
-6. **Done → Build.**
+2. Set **Project name** to `hermes`.
+3. Set **Path** to `/volume1/docker/hermes`. This is the project folder, not
+   the `data` folder.
+4. Container Manager finds the `docker-compose.yml` file and asks you to use
+   it. Accept.
+5. Go through the web-portal wizard. Do not configure a value. You do not need
+   a reverse proxy entry now.
+6. Select **Done → Build**.
 
-The first build pulls ~1–2 GB. Watch the log pane; the gateway logs its bind
-addresses on startup.
+The first build downloads 1 GB to 2 GB. Look at the log pane. The gateway
+writes its bind addresses to the log at start.
 
-## 7. Verify
+## 7. Do a test of the installation
 
 ```bash
 sudo docker ps --filter name=hermes
 sudo docker logs --tail 100 hermes
 ```
 
-Look for the dashboard binding on `0.0.0.0:9119` and no errors about
-`/opt/data` permissions. Then browse to:
+Find the dashboard on `0.0.0.0:9119`. Make sure that there are no errors about
+`/opt/data` permissions. Then open this address in a browser:
 
 ```
 http://<nas-ip>:9119
 ```
 
-Despite the `BASIC_AUTH` env var names, the dashboard redirects to a `/login`
-form rather than issuing an HTTP auth challenge. Sign in with `DASHBOARD_USER`
-/ `DASHBOARD_PASS`.
+The names of the environment variables contain `BASIC_AUTH`. But the dashboard
+sends you to a `/login` form. It does not send an HTTP auth challenge. Log in
+with `DASHBOARD_USER` and `DASHBOARD_PASS`.
 
-Confirm Hermes resolved your endpoint rather than a default provider:
+Make sure that Hermes uses your endpoint, and not a default provider:
 
 ```bash
 sudo docker exec -it hermes hermes config
 ```
 
-Under `◆ Model` you should see your `base_url` and your model id as `default`.
+The `◆ Model` section must show your `base_url`, and your model id as
+`default`.
 
-Then smoke-test the whole chain non-interactively with `-z`:
+Then do a test of the full chain with the `-z` option. This option does not
+start an interactive session:
 
 ```bash
 sudo docker exec hermes hermes -z "What is 17 times 23? Answer with just the number."
 ```
 
-A correct answer means container → endpoint → tool loop all work. If you
-configured `auxiliary.vision`, check that path too by dropping a PNG in the
-data folder and asking about it:
+A correct answer shows that the container, the endpoint and the tool loop
+operate. If you configured `auxiliary.vision`, do a test of that path also. Put
+a PNG file in the data folder and ask a question about it:
 
 ```bash
-sudo docker exec hermes hermes -z "Describe the colours in /opt/data/test.png"
+sudo docker exec hermes hermes -z "Describe the colors in /opt/data/test.png"
 ```
 
-## Day-to-day use
+## Daily operation
 
-The dashboard is the main interface. For the CLI, exec into the container —
-Hermes automatically drops to its runtime user, so don't add `-u`:
+The dashboard is the primary interface. To use the CLI, run a command in the
+container. Hermes changes to its runtime user automatically. Thus do not add
+the `-u` option:
 
 ```bash
 sudo docker exec -it hermes hermes chat
 sudo docker exec -it hermes hermes config edit
-sudo docker exec -it hermes hermes -p work gateway start   # extra profile
+sudo docker exec -it hermes hermes -p work gateway start   # a different profile
 ```
 
-Logs are tee'd to disk as well as stdout:
+Hermes writes the log data to stdout and to the disk:
 
 ```
 /volume1/docker/hermes/data/logs/gateways/default/current
 ```
 
-### `config.yaml` is machine-managed
+### Hermes controls the `config.yaml` file
 
-Changing anything in the dashboard, or running `hermes config set`, rewrites
-`config.yaml` in place. The rewrite strips every comment, reorders and renames
-keys to their canonical form, and stamps a `_config_version`. Keys the writer
-doesn't round-trip are silently dropped — `model.context_length` is one, so it
-disappears the first time you change the main model in the UI.
+Hermes writes the `config.yaml` file again when you change a value on the
+dashboard, or when you run `hermes config set`. The new file has no comments.
+Hermes puts the keys in the canonical sequence and gives them the canonical
+names. Hermes also adds a `_config_version` value. Hermes removes the keys that
+the writer does not know. `model.context_length` is one of these keys. Hermes
+removes it the first time that you change the main model on the dashboard.
 
-Treat the file as seed state rather than something you maintain by hand. After
-any UI change, spot-check what survived:
+Use the file as initial data. Do not maintain it manually. After each change on
+the dashboard, examine the values that stay in the file:
 
 ```bash
 docker exec hermes hermes config get model.context_length
 ```
 
-Keep the annotated copy in `config.yaml.example` under version control; that's
-the one with the reasoning in it.
+Keep the `config.yaml.example` file in version control. That file has the
+comments and the explanations in it.
 
-## Optional: expose Hermes' own OpenAI-compatible API
+## Optional: give access to the OpenAI-compatible API of Hermes
 
-Distinct from the upstream endpoint Hermes consumes — this makes *Hermes* look
-like an OpenAI API to other tools on your tailnet.
+This API is not the same as the endpoint that Hermes uses for inference. This
+API makes *Hermes* look like an OpenAI API to the other tools on your tailnet.
 
-1. Add a strong key to `.env`:
+1. Add a strong key to the `.env` file:
 
    ```bash
    echo "API_SERVER_KEY=$(openssl rand -hex 32)" >> /volume1/docker/hermes/.env
    ```
 
-2. In `docker-compose.yml`, set `API_SERVER_ENABLED: "true"` and uncomment the
-   `API_SERVER_HOST`, `API_SERVER_PORT`, and `API_SERVER_KEY` lines, plus the
-   `8642` port mapping.
-3. Rebuild the project in Container Manager.
+2. In `docker-compose.yml`, set `API_SERVER_ENABLED: "true"`. Then make the
+   `API_SERVER_HOST`, `API_SERVER_PORT` and `API_SERVER_KEY` lines active, and
+   the `8642` port mapping also.
+3. Build the project again in Container Manager.
 
-Hermes requires the key to be at least 8 characters whenever the API server is
-bound to `0.0.0.0`, and refuses to start otherwise. Health check:
+Hermes needs a key of 8 characters minimum when the API server binds to
+`0.0.0.0`. If the key is too short, Hermes does not start. Use this health
+check:
 
 ```bash
 sudo docker exec hermes curl -s http://127.0.0.1:8642/health
 ```
 
-## Networking
+## Network
 
 ### Tailnet DNS
 
-The Synology Tailscale package puts a `tailscale0` interface on the host, so
-bridge-mode containers reach `100.x.y.z` addresses fine — the host routes for
-them. **MagicDNS names are a different story:** the package doesn't rewrite
-container resolvers, so `llm.your-tailnet.ts.net` typically won't resolve
-inside the container even though it resolves on the NAS shell.
+The Synology Tailscale package puts a `tailscale0` interface on the host. Thus
+containers in bridge mode get access to `100.x.y.z` addresses, because the host
+routes the data for them. **MagicDNS names are different.** The package does
+not change the resolvers of the containers. Thus a name such as
+`llm.your-tailnet.ts.net` usually does not resolve in the container. The same
+name resolves correctly in the NAS shell.
 
-Use the raw `100.x.y.z` address. If you'd rather use the name, pin it in
+Use the `100.x.y.z` address. If you prefer the name, set it in
 `docker-compose.yml`:
 
 ```yaml
@@ -296,40 +317,41 @@ extra_hosts:
   - "llm.your-tailnet.ts.net:100.x.y.z"
 ```
 
-Pointing the container's resolver at `100.100.100.100` also works, but it
-routes *all* container DNS through Tailscale, which breaks name resolution if
-Tailscale is down. The `extra_hosts` pin is the more predictable option.
+You can also point the resolver of the container at `100.100.100.100`. But then
+*all* the DNS data of the container goes through Tailscale. If Tailscale stops,
+no name resolves. The `extra_hosts` entry is more reliable.
 
-Tailscale addresses are stable per node, so `extra_hosts` won't drift. If you
-rebuild the inference host from scratch it'll get a new address — update both
-`config.yaml` and `extra_hosts` then.
+A Tailscale address does not change for a given node. Thus the `extra_hosts`
+entry stays correct. If you install the inference host again, that host gets a
+new address. Then change the address in `config.yaml` and in `extra_hosts`.
 
-### Locking the ports down
+### Limit the access to the ports
 
-By default the dashboard is published on every NAS interface. To make it
-tailnet-only, put the NAS's own Tailscale address in `.env`:
+By default, the dashboard is available on all the NAS interfaces. To make it
+available only on the tailnet, put the Tailscale address of the NAS in the
+`.env` file:
 
 ```bash
 BIND_ADDR=100.a.b.c
 ```
 
-and rebuild. Docker then binds the published port to that interface only.
-Note this hard-codes the NAS's tailnet address into the deployment — if it
-ever changes, the container will fail to start with a bind error, which is a
-loud enough failure to be fine.
+Then build the project again. Docker binds the port to that interface only.
+This procedure writes the tailnet address of the NAS into the deployment. If
+that address changes, the container does not start and Docker gives a bind
+error. This failure is easy to find.
 
-The DSM firewall (_Control Panel → Security → Firewall_) is a reasonable
-second layer if you'd rather keep LAN access but restrict it by source subnet.
+The DSM firewall (_Control Panel → Security → Firewall_) is a good second
+control. Use it if you want LAN access, but only from some subnets.
 
 ### Reverse proxy
 
-If you want HTTPS, _Control Panel → Login Portal → Advanced → Reverse Proxy_
-can front `localhost:9119` with a DSM certificate. Basic auth passes through
-unchanged.
+For HTTPS, use _Control Panel → Login Portal → Advanced → Reverse Proxy_. It
+can put `localhost:9119` behind a DSM certificate. The basic auth data goes
+through without a change.
 
-## Updating
+## How to update the image
 
-Docker installs don't support `hermes update` — you update the image:
+Docker installations do not have the `hermes update` command. Update the image:
 
 ```bash
 cd /volume1/docker/hermes
@@ -337,129 +359,137 @@ sudo docker compose pull
 sudo docker compose up -d
 ```
 
-Or in Container Manager: select the project → **Action → Build**, which
-re-pulls `:latest`. State in `data/` is untouched. Pin to a specific tag
-instead of `latest` in `docker-compose.yml` if you'd rather control when
-versions move.
+As an alternative, use Container Manager. Select the project, then select
+**Action → Build**. Container Manager pulls the `:latest` image again. The data
+in the `data/` folder does not change. To control when the version changes,
+write a specific tag in `docker-compose.yml`. Do not use `latest`.
 
-## Backup
+## How to make a backup
 
-Everything that matters is one folder:
+All the important data is in one folder:
 
 ```bash
 sudo tar czf /volume1/backups/hermes-$(date +%F).tar.gz \
   -C /volume1/docker/hermes data .env
 ```
 
-That covers `config.yaml`, `.env`, `SOUL.md`, sessions, memories, skills, and
-cron jobs. Add `/volume1/docker/hermes` to Hyper Backup for something
-scheduled.
+This command includes `config.yaml`, `.env`, `SOUL.md`, the sessions, the
+memories, the skills and the cron jobs. For a scheduled backup, add
+`/volume1/docker/hermes` to Hyper Backup.
 
-## Troubleshooting
+## Problems and solutions
 
-**Container Manager rejects `deploy:`** — some DSM builds are fussy about it.
-Replace the whole `deploy:` block with the legacy equivalents:
+**Container Manager does not accept `deploy:`.** Some DSM versions do not
+accept this block. Replace the full `deploy:` block with the legacy values:
 
 ```yaml
     mem_limit: 4g
     cpus: 2.0
 ```
 
-**Permission errors on `/opt/data`, or the gateway exits immediately** —
-`PUID`/`PGID` don't match the folder owner. Confirm with:
+**You get permission errors on `/opt/data`, or the gateway stops immediately.**
+The `PUID` and `PGID` values do not agree with the owner of the folder. Examine
+the owner:
 
 ```bash
 stat -c '%u %g' /volume1/docker/hermes/data
 ```
 
-and make `.env` agree, or re-run the `chown` from step 2.
+Then correct the `.env` file, or do the `chown` command from step 2 again.
 
-**Dashboard container starts then dies** — Hermes fails closed when the
-dashboard binds to a non-loopback address with no auth provider. Check that
-`DASHBOARD_USER` and `DASHBOARD_PASS` actually made it in:
+**The dashboard container starts, then stops.** Hermes stops if the dashboard
+binds to a non-loopback address and has no auth provider. Make sure that
+`DASHBOARD_USER` and `DASHBOARD_PASS` are in the container:
 
 ```bash
 sudo docker exec hermes env | grep DASHBOARD
 ```
 
-`HERMES_DASHBOARD_INSECURE=1` is deprecated and ignored, so it isn't a way
-around this.
+`HERMES_DASHBOARD_INSECURE=1` is obsolete and Hermes ignores it. Thus you
+cannot use it as an alternative.
 
-**Model calls fail, dashboard is fine** — the endpoint isn't reachable from
-*inside* the container, even if it was from the NAS shell:
+**The model calls fail, but the dashboard operates.** The container cannot get
+access to the endpoint. The NAS shell can get access to it. Do this test:
 
 ```bash
 sudo docker exec hermes curl -s http://100.x.y.z:8000/v1/models
 ```
 
-Almost always DNS (see above) or a tailnet ACL.
+The cause is usually DNS (refer to the previous data) or a tailnet ACL.
 
-**Truncation or context errors mid-session** — `context_length` in
-`config.yaml` is larger than what the inference server was launched with.
+**You get truncation errors or context errors during a session.** The
+`context_length` value in `config.yaml` is larger than the value of the
+inference server.
 
-**Deploy fails with `variable is not set`** — a `:?` guard fired. The message
-names the missing variable; add it to `.env`. Also check the `.env` is in the
-same folder as `docker-compose.yml`, not in `data/`.
+**The deployment fails with `variable is not set`.** A `:?` guard operated. The
+message gives the name of the variable that is not set. Add that variable to
+the `.env` file. Also make sure that the `.env` file is in the same folder as
+`docker-compose.yml`. It must not be in the `data/` folder.
 
-## Security notes
+## Security data
 
-- The dashboard's basic auth is the only thing between your LAN and an agent
-  that can run shell commands. Use a long random password, and prefer
-  `BIND_ADDR=100.a.b.c` so it isn't exposed to the LAN at all.
-- `.env` holds secrets in plaintext — `chmod 600` it, and don't let the
-  `docker` shared folder get indexed or synced anywhere.
-- The Docker socket mount is commented out deliberately. Mounting it gives the
-  agent effective root on the NAS, including every other container.
-- Shell commands from the agent run inside this container as `PUID`, and see
-  only `/opt/data` unless you mount more. Adding host paths as volumes widens
-  that blast radius.
-- Don't forward port 9119 through your router. Reach it over the tailnet.
+**Warning: The basic auth of the dashboard is the only protection between your
+LAN and an agent that can run shell commands.** Use a long random password.
+Also set `BIND_ADDR=100.a.b.c`, to keep the dashboard off the LAN.
 
-## Appendix: running on macOS
+- The `.env` file holds secrets in plain text. Do a `chmod 600` on it. Do not
+  let a service index or sync the `docker` shared folder.
+- The Docker socket mount is not active. This is deliberate. If you mount the
+  socket, the agent gets root access to the NAS and to all the other
+  containers.
+- The shell commands from the agent operate in this container as `PUID`. They
+  can see only `/opt/data`. If you mount more host paths, the agent can see
+  more data.
+- Do not send port 9119 through your router. Use the tailnet.
 
-The compose file is plain Compose v2 with nothing Synology-specific in it, and
-the image publishes `linux/arm64`, so the same stack runs under Docker Desktop.
-Only the values in `.env` change — steps 2, 3 and 6 above are Container Manager
-choreography you can skip in favour of `docker compose up -d`.
+## Appendix: operation on macOS
+
+The compose file is Compose v2 and has nothing that is specific to Synology.
+The image has a `linux/arm64` version. Thus the same stack operates with Docker
+Desktop. Only the values in the `.env` file are different. Steps 2, 3 and 6 are
+Container Manager procedures. On macOS, use `docker compose up -d` in their
+place.
 
 ```bash
 HERMES_DATA=/Users/you/Development/hermes-docker/data
-PUID=501            # your uid; largely cosmetic under Docker Desktop, which
-PGID=20             # remaps bind-mount ownership via virtiofs
+PUID=501            # your uid; it has almost no function with Docker Desktop,
+PGID=20             # which changes bind-mount ownership through virtiofs
 BIND_ADDR=127.0.0.1 # dashboard on loopback only
-MEM_LIMIT=2G        # must fit inside Docker Desktop's VM allocation
+MEM_LIMIT=2G        # must be less than the memory of the Docker Desktop VM
 ```
 
-`MEM_LIMIT` is the one that bites: Compose will happily accept a limit larger
-than the VM, and the container gets OOM-killed under load instead of failing at
-start.
+`MEM_LIMIT` causes the most problems. Compose accepts a limit that is larger
+than the VM. Then the container gets an OOM-kill during operation. It does not
+fail at start.
 
-### Pointing at the DGX Spark over the tailnet
+### How to use the DGX Spark on the tailnet
 
-This is the setup actually in use: Hermes under Docker Desktop on the Mac, with
-inference on a DGX Spark (`edgexpert-7b1e`, NVIDIA GB10) running llama.cpp on
-port 8080, reached over the tailnet.
+This is the configuration that is in use. Hermes operates with Docker Desktop
+on the Mac. The inference is on a DGX Spark (`edgexpert-7b1e`, NVIDIA GB10).
+The Spark runs llama.cpp on port 8080. The Mac gets access to it on the
+tailnet.
 
-Docker Desktop routes container traffic to `100.x.y.z` addresses through the
-host, so this needs no `host.docker.internal` indirection and no special network
-mode. Prove that from inside a container before configuring anything, because a
-working `curl` on the Mac does not prove the container can get there:
+Docker Desktop sends container data for `100.x.y.z` addresses through the host.
+Thus you do not need `host.docker.internal` and you do not need a special
+network mode. Do a test from a container before you configure Hermes. A correct
+`curl` on the Mac does not show that the container has access:
 
 ```bash
 docker run --rm curlimages/curl -s -o /dev/null -w '%{http_code}\n' \
-  http://100.x.y.z:8080/v1/models          # want 200
+  http://100.x.y.z:8080/v1/models          # the reply must be 200
 ```
 
-Then ask the server what it is. `/v1/models` gives the id and the context window
-it was launched with; `/props` gives the modalities:
+Then get the data about the server. `/v1/models` gives the id and the context
+window from the start command. `/props` gives the modalities:
 
 ```bash
 curl -s http://100.x.y.z:8080/v1/models | jq '.data[] | {id, n_ctx: .meta.n_ctx}'
 curl -s http://100.x.y.z:8080/props    | jq '.modalities'
 ```
 
-A multimodal GGUF answers `{"vision": true, "video": true, "audio": false}`,
-which means one model covers both text and images:
+A multimodal GGUF file gives this reply:
+`{"vision": true, "video": true, "audio": false}`. Thus one model does the text
+and the images:
 
 ```yaml
 model:
@@ -478,34 +508,38 @@ auxiliary:
     timeout: 180
 ```
 
-Spell the vision block out rather than leaving it on `provider: auto`. `auto`
-reuses the main model, which is the right endpoint here, but it depends on
-Hermes deciding that model is vision-capable — and a locally-served GGUF carries
-no capability metadata for it to consult. Being explicit removes the guess. The
-other `auxiliary` slots can stay on `auto`; they follow the main model.
+Write all the values in the vision block. Do not use `provider: auto`. `auto`
+uses the main model, which is the correct endpoint here. But `auto` also needs
+Hermes to know that the model has a vision capability. A local GGUF file has no
+capability metadata for Hermes to read. If you write the values, Hermes does
+not make an estimate. The other `auxiliary` items can stay on `auto`. They use
+the main model.
 
-llama.cpp only checks the bearer token when started with `--api-key`, so
-`LLM_API_KEY=none` is an ignored placeholder here. Keep it non-empty regardless
-— an empty key can trip client-side validation before a request is even sent.
+llama.cpp examines the bearer token only when you start it with `--api-key`.
+Thus `LLM_API_KEY=none` has no function here. But keep a value in that
+variable. An empty key can cause a client-side validation error before the
+client sends the request.
 
-Take `context_length` from the server's own `n_ctx`, not the model's
-architectural maximum. Hermes compacts at 50% of this value, so an inflated
-number means sessions balloon before anything trims them.
+Take the `context_length` value from the `n_ctx` value of the server. Do not
+use the maximum value of the model architecture. Hermes does a compaction at
+50% of the `context_length` value. If that value is too large, the sessions
+become very large before the compaction.
 
-Verify both paths through the container rather than against the server:
+Do the tests through the container. Do not do them against the server:
 
 ```bash
 docker exec hermes hermes -z 'Reply with exactly: SPARK OK'
-docker exec hermes hermes -z 'Use your vision capability on /opt/data/workspace/test.png. Reply with only the shape and its colour.'
+docker exec hermes hermes -z 'Use your vision capability on /opt/data/workspace/test.png. Reply with only the shape and its color.'
 ```
 
-Use an image whose answer you already know — a flat coloured shape on white is
-enough to tell a working vision path from a plausible hallucination.
+Use an image for which you know the correct answer. A flat colored shape on a
+white background is sufficient. It shows the difference between a correct
+vision path and a hallucination.
 
-One operational note: llama.cpp serves `total_slots: 1` unless told otherwise,
-so requests queue instead of running in parallel. A vision call landing during a
-long generation waits its turn, which reads as a hang if you aren't expecting
-it. Check what the server is chewing on with:
+One operational note: llama.cpp gives `total_slots: 1` by default. Thus the
+requests go into a queue and do not operate in parallel. A vision request
+during a long generation waits. This looks like a failure if you do not know
+about the queue. Examine the current task of the server:
 
 ```bash
 curl -s http://100.x.y.z:8080/slots | jq '.[0] | {is_processing, n_prompt_tokens}'
