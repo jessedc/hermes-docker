@@ -1,0 +1,101 @@
+# ---------------------------------------------------------------------------
+# Hermes Agent — MINIMAL configuration
+#
+# Copy to  <HERMES_DATA>/config.yaml  BEFORE the first start.
+#
+# Three capabilities and nothing else: the local model, one MCP server, and
+# Telegram. Everything else is off. Expand deliberately — see "Expanding" in
+# the README.
+#
+# PORTABLE BY DESIGN: every host-specific value is a ${VAR} read from the
+# container environment, so this exact file runs on the Mac and on the NAS.
+# Only .env differs. Verified: ${VAR} in base_url, default and the MCP url all
+# resolve, and survive the machine-rewrite described below.
+#
+# HEADS UP: this file is machine-managed. The dashboard and `hermes config set`
+# rewrite it — comments stripped, keys reordered. ${VAR} placeholders ARE
+# preserved verbatim through a rewrite. Treat it as seed state.
+# ---------------------------------------------------------------------------
+
+model:
+  provider: custom
+  base_url: "${LLM_BASE_URL}"
+  default: "${LLM_MODEL}"
+  api_key: "${LLM_API_KEY}"
+  # From the server's own n_ctx, not the model's architectural maximum:
+  #   curl -s $LLM_BASE_URL/models | jq '.data[].meta.n_ctx'
+  context_length: 262144
+
+# All "auto" — they follow the main model. Nothing routes anywhere else.
+auxiliary:
+  vision: {provider: auto}
+  compression: {provider: auto, timeout: 120}
+  web_extract: {provider: auto, timeout: 360}
+  title_generation: {enabled: true, provider: auto, timeout: 30}
+
+agent:
+  # Deliberately far below the stock 500. This box runs unattended; a runaway
+  # loop should stop on its own rather than grind the inference server for an
+  # afternoon. Raise it when you have a task that genuinely needs the turns.
+  max_turns: 40
+  api_max_retries: 3
+  reasoning_effort: none
+
+# ── The allowlist ─────────────────────────────────────────────────────────
+# This is the whole point of the minimal setup. Only toolsets named here are
+# enabled; everything else is off, per platform. `memory` alone costs 2,833 B
+# of tool schema against 55,460 B for the stock set.
+#
+# Add to BOTH lists when expanding, or the capability appears in one surface
+# and not the other. Equivalent CLI:
+#   hermes tools enable file --platform telegram
+platform_toolsets:
+  cli: [memory]
+  telegram: [memory]
+
+# ── Why this block matters ────────────────────────────────────────────────
+# Hermes treats a toolset it has never seen as NEW and enables it by default.
+# Without this list, a toolset missing from platform_toolsets above can still
+# come up enabled — observed with `bfl` on a first run, and it is how an image
+# update that adds toolsets would silently re-expand the agent.
+#
+# Seeding the known set closes that door: anything listed here is governed by
+# the allowlist above. Re-check after a major image update with `hermes tools
+# list`; a genuinely new toolset will not be in this list yet.
+known_builtin_toolsets:
+  cli: &known [bfl, browser, clarify, code_execution, computer_use,
+    context_engine, cronjob, delegation, discord, discord_admin, file,
+    homeassistant, image_gen, kanban, memory, session_search, skills, spotify,
+    stt, terminal, todo, tts, video, video_gen, vision, web, x_search, yuanbao]
+  telegram: *known
+
+# ── MCP ───────────────────────────────────────────────────────────────────
+# Search comes from here rather than the built-in `web` toolset, so no Brave
+# API key is needed in the data folder — the MCP server holds it.
+#
+# tools.include is an allowlist (exact names or globs). The server offers 8
+# tools; one is enough to start. Add brave_news_search, brave_summarizer or
+# brave_llm_context when you want them.
+#
+# The URL differs per host and that is the ONLY MCP difference between the Mac
+# and the NAS. See the README — the NAS cannot use the tailnet URL.
+mcp_servers:
+  brave-search:
+    url: "${BRAVE_MCP_URL}"
+    enabled: true
+    tools:
+      include: [brave_web_search]
+
+memory:
+  memory_enabled: true
+  user_profile_enabled: true
+
+compression:
+  enabled: true
+  threshold: 0.50
+  target_ratio: 0.20
+  protect_last_n: 20
+
+updates:
+  pre_update_backup: quick
+  backup_keep: 5

@@ -29,6 +29,137 @@ stateless, so upgrading is just a re-pull.
 | `docker-compose.yml`  | project folder (`/volume1/docker/hermes/`)    |
 | `.env.example`        | copy to `.env` in the project folder          |
 | `config.yaml.example` | copy to `config.yaml` in the **data** folder  |
+| `minimal/`            | a stripped-down alternative to all three      |
+
+Two deployments live here. The root files are the **full** reference: every
+toolset on, dashboard published, the shape this repo started with. `minimal/`
+is three capabilities and nothing else — local model, one MCP server, Telegram
+— and is the better place to start. See [Minimal deployment](#minimal-deployment).
+
+## Minimal deployment
+
+`minimal/` runs three capabilities and nothing else: **the local model, one MCP
+server, and Telegram.** Everything else is off and expands deliberately.
+
+The case for starting here rather than trimming later, measured with
+`hermes prompt-size` on both:
+
+| | full | `minimal/` |
+| --- | --- | --- |
+| System prompt | 22,735 B | 10,534 B |
+| Tool schemas | 55,460 B (21 tools) | 2,835 B (1 tool) |
+| Published ports | 9119 | **none** |
+| MCP tools exposed | 8 | 1 |
+
+That ~78 KB → ~13 KB is prepended to *every* request. And with the dashboard
+off there is no `ports:` key at all — nothing listens. Every connection is
+outbound: the inference server over the tailnet, `api.telegram.org` over the
+internet, and the MCP server sideways over a Docker network.
+
+Telegram makes that possible. Hermes long-polls `getUpdates` rather than
+registering a webhook (no `set_webhook` call exists in the adapter), so a chat
+interface costs you no inbound port, no reverse proxy and no public DNS.
+
+### Setting it up
+
+Folders and Container Manager choreography are the same as the full path —
+[step 2](#2-create-the-folders) and [step 6](#6-create-the-project-in-container-manager)
+— with `minimal/`'s three files in place of the root ones:
+
+```bash
+scp minimal/docker-compose.yml minimal/.env.example you@nas:/volume1/docker/hermes/
+scp minimal/config.yaml.example you@nas:/volume1/docker/hermes/data/
+```
+
+Rename to `.env` and `config.yaml`, `chmod 600 .env`, then fill in `.env`.
+
+`config.yaml` and `docker-compose.yml` are **byte-identical on the Mac and the
+NAS** — every host-specific value is a `${VAR}` resolved from the container
+environment, and those placeholders survive the machine-rewrite that strips
+comments. `.env` is the only file that differs.
+
+For Telegram you need two values: a bot token from
+[@BotFather](https://t.me/BotFather), and your numeric user ID from
+`@userinfobot` for `TELEGRAM_ALLOWED_USERS`. Setting the token is all it takes
+to enable the platform — there is no `config.yaml` key for it, and no
+`hermes gateway setup` run required.
+
+One token drives one poller. Starting a second gateway on the same token earns
+a 409 Conflict from Telegram, so the Mac and the NAS need separate bots if you
+run both.
+
+### Verifying
+
+```bash
+sudo docker compose up -d
+sudo docker ps --filter name=hermes          # healthy, PORTS column empty
+sudo docker exec hermes hermes tools list    # only `memory` enabled
+sudo docker exec hermes hermes prompt-size   # ~10.5 KB system, ~2.8 KB tools
+sudo docker exec hermes hermes -z 'Reply with exactly: MINIMAL OK'
+```
+
+A placeholder bot token is caught at startup with a named error rather than a
+confusing auth failure later:
+
+```
+ERROR gateway.config: telegram is enabled but TELEGRAM_BOT_TOKEN is set to a
+placeholder value. The adapter will NOT be started.
+```
+
+### How the restriction actually works
+
+`platform_toolsets` is an allowlist, per platform — only what is named there is
+enabled. Add to **both** `cli` and `telegram` or a capability shows up in one
+surface and not the other.
+
+The non-obvious half is `known_builtin_toolsets`. Hermes treats a toolset it
+has never seen as new and enables it by default, so a toolset simply *absent*
+from the allowlist can still come up on — observed with `bfl` on a first run.
+Seeding the known set closes that door, and stops an image update that adds
+toolsets from silently re-expanding the agent. After a major image update,
+re-check with `hermes tools list`.
+
+MCP tools are allowlisted separately, and are not counted by `prompt-size`
+because they load per session:
+
+```yaml
+mcp_servers:
+  brave-search:
+    tools:
+      include: [brave_web_search]     # exact names or globs
+```
+
+### Expanding
+
+Roughly cheapest-and-safest first. Each step applies to both surfaces:
+
+```bash
+hermes tools enable clarify --platform cli
+hermes tools enable clarify --platform telegram
+```
+
+1. `clarify`, `todo` — a few KB, better conversations
+2. more Brave tools — `brave_news_search`, `brave_summarizer`, via `tools.include`
+3. `skills` — then prune `data/skills`, since the index is always-on
+4. `file` — read/write inside `/opt/data`
+5. `session_search` — 6.5 KB for one tool, worth it only if you use it
+6. `terminal` + `code_execution` — real agent powers; blast radius is
+   `/opt/data` unless you mount more
+7. `browser` — Chromium in the container; raise `MEM_LIMIT` and add
+   `shm_size: 1gb`
+8. the dashboard — set `HERMES_DASHBOARD: "1"`, add the three
+   `HERMES_DASHBOARD_BASIC_AUTH_*` vars and a `ports:` entry. This is the step
+   that gives the deployment its first listener; bind it to the NAS's tailnet
+   address, not `0.0.0.0`.
+9. `cronjob` — last. Unattended turns with whatever you enabled above, and the
+   reason `TELEGRAM_HOME_CHANNEL` exists.
+
+Not worth enabling on a headless NAS at all: `computer_use` (9,699 B, the
+largest single toolset, and there is no desktop), `vision` (the model is
+text-only), `tts`, and `image_gen` (inert without a provider key). `delegation`
+is actively counterproductive against a llama.cpp server running
+`total_slots: 1` — sub-agents serialise behind each other instead of running
+in parallel.
 
 ## Prerequisites
 

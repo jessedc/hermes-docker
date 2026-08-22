@@ -1,0 +1,106 @@
+# ---------------------------------------------------------------------------
+# Hermes Agent — MINIMAL deployment (Synology Container Manager or Docker
+# Desktop; the file is identical on both).
+#
+# Local model + one MCP server + Telegram. Nothing else.
+#
+# NO PUBLISHED PORTS. The dashboard is off, the API server is off, and there
+# is no `ports:` key at all — nothing listens. Every connection is outbound:
+#   → the inference server, over the tailnet
+#   → api.telegram.org, over the internet (long-polling, so no inbound
+#     webhook, no reverse proxy, no port forwarding)
+#   → the MCP server, sideways over a Docker network (NAS) or the tailnet (Mac)
+#
+# Host-specific values live in .env. See .env.example.
+# ---------------------------------------------------------------------------
+
+name: hermes
+
+services:
+  hermes:
+    image: nousresearch/hermes-agent:latest
+    container_name: hermes
+    restart: unless-stopped
+    command: gateway run
+
+    environment:
+      # -- Run as the owner of the bind mount ---------------------------------
+      PUID: "${PUID:?set PUID in .env — run 'id -u' on the host}"
+      PGID: "${PGID:?set PGID in .env — run 'id -g' on the host}"
+      TZ: "${TZ:-UTC}"
+
+      # -- No dashboard -------------------------------------------------------
+      # "0" means no HTTP listener and therefore no dashboard credentials to
+      # manage. Telegram is the interface. To add the dashboard later, see
+      # "Expanding" in the README — it is a real expansion step, not a default.
+      HERMES_DASHBOARD: "0"
+
+      # -- The model ----------------------------------------------------------
+      # Read by config.yaml as ${LLM_BASE_URL} / ${LLM_MODEL} / ${LLM_API_KEY},
+      # which is what keeps that file identical across hosts.
+      LLM_BASE_URL: "${LLM_BASE_URL:?set LLM_BASE_URL in .env}"
+      LLM_MODEL: "${LLM_MODEL:?set LLM_MODEL in .env}"
+      LLM_API_KEY: "${LLM_API_KEY:-none}"
+
+      # -- The MCP server -----------------------------------------------------
+      # THE one value that differs between hosts. Mac: the tailnet URL. NAS:
+      # the container name on the shared Docker network. See the README.
+      BRAVE_MCP_URL: "${BRAVE_MCP_URL:?set BRAVE_MCP_URL in .env}"
+
+      # -- Telegram -----------------------------------------------------------
+      # Setting TELEGRAM_BOT_TOKEN is all it takes: Hermes auto-enables the
+      # platform when the token is present. There is no config.yaml key for it.
+      TELEGRAM_BOT_TOKEN: "${TELEGRAM_BOT_TOKEN:?set TELEGRAM_BOT_TOKEN in .env}"
+      # Required on purpose. Without an allowlist the gateway falls back to a
+      # pairing policy and denies unknown senders — it fails closed — but an
+      # explicit list is the difference between a bot that ignores strangers
+      # and a bot you can reason about.
+      TELEGRAM_ALLOWED_USERS: "${TELEGRAM_ALLOWED_USERS:?set TELEGRAM_ALLOWED_USERS in .env}"
+      # Where unprompted messages go. Optional until you enable cron.
+      TELEGRAM_HOME_CHANNEL: "${TELEGRAM_HOME_CHANNEL:-}"
+
+    # No ports. Deliberately. See the header.
+
+    volumes:
+      - "${HERMES_DATA:?set HERMES_DATA in .env}:/opt/data"
+      # Do NOT mount /var/run/docker.sock here. It is root on the host.
+
+    # -- NAS ONLY: reaching the MCP container ---------------------------------
+    # On the NAS the MCP server is another container on the same host, and the
+    # tailnet URL cannot work (README: "Reaching an MCP server on the NAS
+    # itself"). Join its network and address it by container name.
+    # Uncomment this AND the top-level networks: block below.
+    # networks:
+    #   - default
+    #   - brave-search-mcp_default
+
+    healthcheck:
+      # No HTTP endpoint to probe, so prove the gateway process is alive.
+      test: ["CMD-SHELL", "pgrep -f 'hermes gateway' >/dev/null || exit 1"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 90s
+
+    stop_grace_period: 30s
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    deploy:
+      resources:
+        limits:
+          memory: "${MEM_LIMIT:-2G}"
+          cpus: "${CPU_LIMIT:-2.0}"
+
+# -- NAS ONLY (see above) ----------------------------------------------------
+# Confirm the real network name first — compose names it <project>_default:
+#   sudo docker network ls | grep brave
+#
+# networks:
+#   default:
+#   brave-search-mcp_default:
+#     external: true
