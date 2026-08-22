@@ -78,6 +78,15 @@ services:
     # extra_hosts:
     #   - "llm.your-tailnet.ts.net:100.x.y.z"
 
+    # -- Reaching an MCP server that runs on this same NAS --------------------
+    # Container-to-container over a shared Docker network, addressed by
+    # container name on its INTERNAL port. Do not route back out through the
+    # host's published port or the tailnet name; see "MCP servers" in the
+    # README. Uncomment this and the top-level `networks:` block at the bottom.
+    # networks:
+    #   - default
+    #   - brave-search-mcp_default
+
     # Uncomment only if you use the browser-automation toolset.
     # shm_size: 1gb
 
@@ -103,3 +112,14 @@ services:
         limits:
           memory: "${MEM_LIMIT:-4G}"
           cpus: "${CPU_LIMIT:-2.0}"
+
+# Joins the network Container Manager created for the brave-search-mcp project.
+# `external: true` means compose attaches to it rather than creating it, so that
+# project must already be up. Confirm the real name first — it is the project
+# folder name plus "_default":
+#   sudo docker network ls | grep brave
+#
+# networks:
+#   default:
+#   brave-search-mcp_default:
+#     external: true

@@ -27,14 +27,19 @@ model:
   # The path almost always ends in /v1.
   base_url: "http://100.x.y.z:8080/v1"
 
-  # The main model, as the server reports its id. Check with:
+  # The main model. Check what the server has loaded with:
   #   curl -s http://100.x.y.z:8080/v1/models | jq -r '.data[].id'
+  #
+  # llama.cpp reports the id as the full HF cache path and ignores the "model"
+  # field entirely when only one model is loaded, so a short readable alias
+  # works and is what this repo uses. vLLM and LiteLLM do NOT ignore it — there
+  # the id must match exactly what /v1/models prints.
   #
   # The key is "default", NOT "model". Hermes accepts "model:" on read, but
   # "default" is the canonical name it persists, what the dashboard's "Main
   # Model" selector writes, and what `hermes config get model.default` reads.
   # Seeding "model:" leaves the dashboard showing no main model selected.
-  default: "REPLACE_WITH_MODEL_ID"
+  default: "DeepSeek-V4-Flash-0731-UD-IQ2_M"
 
   # Injected from docker-compose.yml. Set LLM_API_KEY=none in .env for a
   # server that does not check the bearer token.
@@ -49,17 +54,21 @@ model:
   # "Main Model" change. Re-check it with
   #   hermes config get model.context_length
   # after using the UI, and re-add it if it has gone missing.
-  context_length: 32768
+  context_length: 262144
 
 # Side tasks: vision, context compression, web page extraction, session
 # titles. "auto" reuses the main model above, which is what you want when
 # there is only one endpoint on the tailnet.
 #
-# Vision is the one worth spelling out. "auto" only routes images to the main
-# model if Hermes believes that model is vision-capable, and a locally-served
-# GGUF carries no capability metadata for it to consult. Check the server with
+# Vision is the one worth checking. "auto" only routes images to the main model
+# if Hermes believes that model is vision-capable, and a locally-served GGUF
+# carries no capability metadata for it to consult. Ask the server directly:
 #   curl -s http://100.x.y.z:8080/props | jq '.modalities'
-# and if it reports "vision": true, name the model explicitly instead:
+#
+# DeepSeek V4 Flash is text-only, so there is nothing to route images to while
+# it is the loaded model and "auto" is the honest setting. Swap in a multimodal
+# GGUF and the server reports "vision": true — then name the model explicitly
+# rather than leaving it on "auto":
 #
 #   vision:
 #     provider: "custom"
@@ -107,6 +116,22 @@ compression:
   threshold: 0.50
   target_ratio: 0.20
   protect_last_n: 20
+
+# MCP servers. Prefer `hermes mcp add <name> --url <endpoint>` over hand-editing
+# this — it probes the endpoint, lists the tools it found, and writes the entry
+# only after a successful connection. The result looks like the block below.
+#
+# The URL is resolved from INSIDE the Hermes container, which is what makes the
+# NAS case counter-intuitive. If the MCP server is another container on the same
+# NAS, do NOT route back out through its published host port or its tailnet
+# name — join its Docker network and address it by container name on its
+# INTERNAL port. See "MCP servers" in the README for why the tailnet route
+# cannot work from the NAS.
+#
+# mcp_servers:
+#   brave-search:
+#     url: "http://brave-search-mcp:8080/mcp"
+#     enabled: true
 
 updates:
   # `hermes update` is unsupported in Docker; you update by pulling the image.

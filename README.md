@@ -278,6 +278,93 @@ bound to `0.0.0.0`, and refuses to start otherwise. Health check:
 sudo docker exec hermes curl -s http://127.0.0.1:8642/health
 ```
 
+## MCP servers
+
+MCP servers add tool sets to the agent. Add one with the CLI rather than by
+editing `config.yaml` — it probes the endpoint, prints the tools it discovered,
+and only writes the entry if the connection succeeded:
+
+```bash
+sudo docker exec -it hermes hermes mcp add brave-search --url <endpoint>
+sudo docker exec hermes hermes mcp list
+sudo docker exec hermes hermes mcp test brave-search
+```
+
+`hermes mcp add` is interactive — it asks whether the server needs auth, then
+whether to enable all discovered tools. Without a TTY it reaches the second
+prompt and prints `Cancelled.` without saving, so use `-it`, or pipe the
+answers (`printf 'n\ny\n' | docker exec -i ...`).
+
+Tools land in the next session, not the running one.
+
+### Reaching an MCP server on the NAS itself
+
+This is the case that looks trivial and isn't. If the MCP server is another
+container on the same NAS, published to loopback and exposed to the tailnet
+with `tailscale serve`, then the obvious URL — the one that works from every
+other machine on your tailnet — is the one URL that cannot work from here.
+
+Two independent reasons:
+
+1. **MagicDNS doesn't resolve in the container.** The same limitation as
+   [Tailnet DNS](#tailnet-dns) below.
+2. **`tailscale serve` only accepts connections from *other* tailnet peers.**
+   Not from the machine doing the serving, and not from its containers. This
+   is worth stating plainly because it is easy to misdiagnose as a firewall or
+   a certificate problem. Verified from a shell on the NAS itself, with DNS
+   taken out of the picture:
+
+   ```bash
+   curl --resolve ds923.tail87aa42.ts.net:8422:100.83.84.78 \
+        https://ds923.tail87aa42.ts.net:8422/mcp        # → 000, no connection
+   curl http://127.0.0.1:8422/mcp                       # → 406, server is fine
+   ```
+
+   The same request from any other tailnet node succeeds. The container case
+   was not tested end to end, but it follows: a bridge-mode container's traffic
+   is host-originated and sources from `172.x.y.z`, so it is on the failing
+   side of that line for the same reason the host shell is.
+
+Pinning the name with `extra_hosts` fixes only reason 1 and leaves reason 2
+intact. Falling back to `https://100.x.y.z:8422/mcp` fails TLS as well — the
+Tailscale-issued certificate carries `DNS:ds923.tail87aa42.ts.net` as its only
+SAN, and no IP SAN.
+
+The fix is to stop going out to the tailnet and back. Both containers are on
+the same Docker host, so put them on the same Docker network and address the
+server by container name **on its internal port** — not the host port it
+publishes:
+
+```yaml
+# docker-compose.yml
+services:
+  hermes:
+    networks:
+      - default
+      - brave-search-mcp_default
+
+networks:
+  default:
+  brave-search-mcp_default:
+    external: true
+```
+
+```bash
+sudo docker network ls | grep brave      # confirm the real network name
+sudo docker exec -it hermes hermes mcp add brave-search \
+     --url http://brave-search-mcp:8080/mcp
+```
+
+Note `8080`, the port inside the MCP container, not the `8422` it publishes on
+the NAS's loopback. Compose names the default network `<project>_default`, so
+a project folder of `brave-search-mcp` yields `brave-search-mcp_default`;
+`external: true` attaches to it instead of creating it, which means that
+project has to be up first.
+
+This route is also strictly better than the tailnet one: no DNS, no TLS
+handshake, no dependency on Tailscale being up for a call between two
+containers a bridge apart.
+
 ## Networking
 
 ### Tailnet DNS
@@ -458,17 +545,36 @@ curl -s http://100.x.y.z:8080/v1/models | jq '.data[] | {id, n_ctx: .meta.n_ctx}
 curl -s http://100.x.y.z:8080/props    | jq '.modalities'
 ```
 
-A multimodal GGUF answers `{"vision": true, "video": true, "audio": false}`,
-which means one model covers both text and images:
+The Spark serves one model at a time, so `config.yaml` follows whatever is
+loaded there. Currently that is DeepSeek V4 Flash, matching the model the other
+tools on this tailnet use:
 
 ```yaml
 model:
   provider: "custom"
   base_url: "http://100.x.y.z:8080/v1"
-  default: "unsloth/Muse-Glimmer-30B-GGUF:UD-Q6_K_XL"
+  default: "DeepSeek-V4-Flash-0731-UD-IQ2_M"
   api_key: "${LLM_API_KEY}"
-  context_length: 131072
+  context_length: 262144
 
+auxiliary:
+  vision:
+    provider: "auto"
+```
+
+llama.cpp reports the model id as the full HF cache path, and ignores the
+`model` field in a request entirely when it has one model loaded — so the short
+alias above works and stays readable. That is a llama.cpp affordance, not a
+general one: vLLM and LiteLLM both validate the id against what `/v1/models`
+prints.
+
+Vision depends on the loaded model, so it is worth re-checking on every swap.
+DeepSeek V4 Flash is text-only, and `provider: "auto"` is the honest setting
+while it is loaded — there is nothing to route an image to. With a multimodal
+GGUF loaded, `/props` reports `{"vision": true, ...}` and the vision block is
+better spelled out explicitly:
+
+```yaml
 auxiliary:
   vision:
     provider: "custom"
@@ -478,11 +584,11 @@ auxiliary:
     timeout: 180
 ```
 
-Spell the vision block out rather than leaving it on `provider: auto`. `auto`
-reuses the main model, which is the right endpoint here, but it depends on
-Hermes deciding that model is vision-capable — and a locally-served GGUF carries
-no capability metadata for it to consult. Being explicit removes the guess. The
-other `auxiliary` slots can stay on `auto`; they follow the main model.
+`auto` would reuse the main model, which is the right endpoint, but it depends
+on Hermes deciding that model is vision-capable — and a locally-served GGUF
+carries no capability metadata for it to consult. Being explicit removes the
+guess. The other `auxiliary` slots can stay on `auto`; they follow the main
+model.
 
 llama.cpp only checks the bearer token when started with `--api-key`, so
 `LLM_API_KEY=none` is an ignored placeholder here. Keep it non-empty regardless
@@ -492,10 +598,15 @@ Take `context_length` from the server's own `n_ctx`, not the model's
 architectural maximum. Hermes compacts at 50% of this value, so an inflated
 number means sessions balloon before anything trims them.
 
-Verify both paths through the container rather than against the server:
+Verify through the container rather than against the server:
 
 ```bash
 docker exec hermes hermes -z 'Reply with exactly: SPARK OK'
+```
+
+And when a multimodal model is loaded, the vision path too:
+
+```bash
 docker exec hermes hermes -z 'Use your vision capability on /opt/data/workspace/test.png. Reply with only the shape and its colour.'
 ```
 
@@ -510,6 +621,63 @@ it. Check what the server is chewing on with:
 ```bash
 curl -s http://100.x.y.z:8080/slots | jq '.[0] | {is_processing, n_prompt_tokens}'
 ```
+
+### MCP servers from the Mac
+
+The tailnet URL that [cannot work from the NAS](#reaching-an-mcp-server-on-the-nas-itself)
+is the correct one here, because the Mac genuinely is a different tailnet peer
+from the NAS hosting the server:
+
+```bash
+docker exec -it hermes hermes mcp add brave-search \
+    --url https://ds923.tail87aa42.ts.net:8422/mcp
+```
+
+Docker Desktop routes container traffic to `100.x.y.z` through the host and does
+rewrite container DNS, so both the MagicDNS name and the certificate work
+without an `extra_hosts` pin. No auth — the server sits behind `tailscale serve`
+and is only reachable from the tailnet in the first place.
+
+### Moving this to the NAS
+
+The two deployments share a compose file, so porting is mostly a matter of
+knowing what is genuinely host-specific.
+
+Transfers untouched: the whole `model:` block (`base_url` is already a raw
+Tailscale IP, which is what Synology requires, and the Spark is a third node to
+both machines), plus `agent:`, `terminal:`, `compression:`, `memory:` and
+`updates:`. So does `web: backend: brave-free` with its `BRAVE_SEARCH_API_KEY`
+— that is the Brave HTTP API, unrelated to the MCP server.
+
+Needs a per-host value, all of them already `.env` variables: `PUID`/`PGID`,
+`HERMES_DATA`, `BIND_ADDR`, `MEM_LIMIT`. Generate fresh dashboard credentials
+rather than copying them; on the Mac the dashboard is on loopback, on the NAS
+it is exposed.
+
+Needs rewriting: the `mcp_servers:` entry, for the reasons in
+[MCP servers](#reaching-an-mcp-server-on-the-nas-itself).
+
+**Do not copy most of `data/`.** The image is multi-arch, and the two hosts are
+not the same architecture — a DS923+ is `x86_64` while an Apple Silicon Mac runs
+the `linux/arm64` image. Anything Hermes compiled or downloaded for one is wrong
+on the other:
+
+| Path | Why |
+| --- | --- |
+| `lazy-packages/` (~300 MB) | native wheels, e.g. `*.cpython-313-aarch64-linux-gnu.so` |
+| `bin/tirith` | arch-specific binary |
+| `.local/`, `cache/`, `sandboxes/` | same problem |
+| `gateway.pid`, `*.lock`, `.hermes_history` | run state from the other host |
+
+Hermes rebuilds all of that on first start. What is worth carrying over is
+`config.yaml`, `SOUL.md`, `memories/`, and any skills you wrote. `state.db`,
+`kanban.db` and `projects.db` are SQLite and portable across architectures, but
+copy them only with the container stopped — otherwise you will take a snapshot
+with an uncheckpointed `-wal` file beside it.
+
+One setting to reconsider on the way over: `browser.backend: browser-use` wants
+`shm_size: 1gb` and a heavy dependency tree, which fits poorly under a NAS-sized
+`MEM_LIMIT`.
 
 ## Reference
 
