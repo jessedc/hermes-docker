@@ -1,6 +1,7 @@
 # Hermes Agent — minimal deployment
 
-Local model + one MCP server + Telegram. Nothing else enabled.
+Local model + one MCP server + Telegram. Three built-in toolsets — `memory`,
+`clarify`, `todo` — and nothing else.
 
 No published ports: the dashboard is off and Telegram long-polls, so every
 connection is outbound. Identical files on macOS and Synology — only `.env`
@@ -93,12 +94,32 @@ On DSM: **Container Manager → Project → Create**, path
 
 ```bash
 docker ps --filter name=hermes        # healthy, PORTS column empty
-docker exec hermes hermes tools list  # only `memory` enabled
+docker exec hermes hermes tools list  # only memory, clarify, todo enabled
+docker exec hermes hermes prompt-size # ~6.6 KB of tool schema, 3 tools
 docker exec hermes hermes mcp test brave-search
 docker exec hermes hermes -z 'Reply with exactly: MINIMAL OK'
 ```
 
-Then message the bot from an allowlisted account.
+Then message the bot from an allowlisted account. Ask it something
+deliberately under-specified — it should come back with a question rendered as
+tappable buttons rather than guessing, which is `clarify` working.
+
+## What's on, and why those three
+
+| Toolset | Schema | Buys you |
+| --- | --- | --- |
+| `memory` | 2,833 B | facts survive the session; the bot is worth talking to twice |
+| `clarify` | 2,414 B | one round-trip instead of a wrong 40-turn run |
+| `todo` | 1,372 B | keeps a low-effort model on plan |
+
+6,625 B of tool schema in total, against 55,460 B for the stock set. `clarify`
+and `todo` add nothing at all to the system prompt, which is what makes them
+the cheapest useful things in the catalogue — see
+[Expanding](../README.md#expanding) for the measured cost of everything else.
+
+`clarify` needs a surface that can answer it. Telegram renders it as inline
+buttons; under `hermes -z` there is no callback, so the tool returns an error
+rather than hanging the run.
 
 ## Troubleshooting
 

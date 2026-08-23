@@ -47,11 +47,11 @@ The case for starting here rather than trimming later, measured with
 | | full | `minimal/` |
 | --- | --- | --- |
 | System prompt | 22,735 B | 10,534 B |
-| Tool schemas | 55,460 B (21 tools) | 2,835 B (1 tool) |
+| Tool schemas | 55,460 B (21 tools) | 6,625 B (3 tools) |
 | Published ports | 9119 | **none** |
 | MCP tools exposed | 8 | 1 |
 
-That ~78 KB → ~13 KB is prepended to *every* request. And with the dashboard
+That ~78 KB → ~17 KB is prepended to *every* request. And with the dashboard
 off there is no `ports:` key at all — nothing listens. Every connection is
 outbound: the inference server over the tailnet, `api.telegram.org` over the
 internet, and the MCP server sideways over a Docker network.
@@ -93,8 +93,8 @@ run both.
 ```bash
 sudo docker compose up -d
 sudo docker ps --filter name=hermes          # healthy, PORTS column empty
-sudo docker exec hermes hermes tools list    # only `memory` enabled
-sudo docker exec hermes hermes prompt-size   # ~10.5 KB system, ~2.8 KB tools
+sudo docker exec hermes hermes tools list    # memory, clarify, todo only
+sudo docker exec hermes hermes prompt-size   # ~10.5 KB system, ~6.6 KB tools
 sudo docker exec hermes hermes -z 'Reply with exactly: MINIMAL OK'
 ```
 
@@ -119,8 +119,9 @@ Seeding the known set closes that door, and stops an image update that adds
 toolsets from silently re-expanding the agent. After a major image update,
 re-check with `hermes tools list`.
 
-MCP tools are allowlisted separately, and are not counted by `prompt-size`
-because they load per session:
+MCP tools are allowlisted separately. `prompt-size` doesn't count them —
+which is an accounting gap, not a free lunch: they are on the wire like
+everything else. See [Expanding](#expanding) for what they actually cost.
 
 ```yaml
 mcp_servers:
@@ -129,35 +130,173 @@ mcp_servers:
       include: [brave_web_search]     # exact names or globs
 ```
 
+### What's on out of the box
+
+Three toolsets, chosen on measured cost per unit of behaviour change rather
+than on capability:
+
+- **`memory`** (2,833 B) — without it the bot isn't worth talking to twice.
+- **`clarify`** (2,414 B) — the agent can ask instead of guessing. Telegram
+  renders it as inline buttons, and with `max_turns: 40` one round-trip is
+  cheaper than a confident wrong answer 40 turns deep.
+- **`todo`** (1,372 B) — a visible plan, which is the closest thing to
+  scaffolding you get from a model doing shallow chain-of-thought.
+
+`clarify` and `todo` add **nothing** to the system prompt. That's the whole
+argument for them: they're the only two entries in the catalogue that change
+how the agent behaves without also enlarging the always-on prefix.
+
+`clarify` needs a surface that can answer it. The Telegram adapter implements
+`send_clarify`; `hermes -z` has no callback, so there the tool returns an error
+rather than hanging a scripted run. `agent.clarify_timeout` (default 3600 s,
+1800 in `minimal/`) bounds how long a session thread waits for a tap.
+
+### Reasoning
+
+`agent.reasoning_effort` is **deliberately unset** in `minimal/`, and that is
+not the same as `none`.
+
+With `provider: custom`, Hermes' `CustomProfile` emits the level as a
+*top-level* `reasoning_effort` field (not `extra_body.reasoning` — that's the
+OpenRouter shape, and `_supports_reasoning_extra_body()` returns `False` for
+any non-OpenRouter base URL). What the endpoint does with it is a separate
+question, and on llama.cpp the answer is mostly "nothing".
+
+llama.cpp will render a prompt without running the model, so you can settle
+this for free. Note `/apply-template` sits at the root, not under `/v1`:
+
+```bash
+U=http://100.x.y.z:8080/apply-template
+M='"messages":[{"role":"user","content":"hi"}]'
+curl -s $U -d "{$M}"                             | jq -r .prompt | wc -c
+curl -s $U -d "{$M,\"reasoning_effort\":\"high\"}" | jq -r .prompt | wc -c
+```
+
+Against `b1-ba360efe1` with DeepSeek V4 Flash:
+
+| added to the request | rendered prompt |
+| --- | ---: |
+| *(nothing — baseline)* | 68 |
+| `reasoning_effort: "high"` | 68 |
+| `reasoning_effort: "medium"` | 68 |
+| `reasoning_effort: "none"` | 69 |
+| `chat_template_kwargs: {thinking: true, reasoning_effort: "high"}` | 544 |
+| `chat_template_kwargs: {…, reasoning_effort: "max"}` | 596 |
+| `chat_template_kwargs: {…, reasoning_effort: "medium"}` | 68 |
+
+An unchanged byte count means the field never reached the template.
+
+Two conclusions. The top-level field is ignored for every value except
+`"none"` — that single byte is llama.cpp special-casing it into thinking-off,
+which makes `none` a real switch and every positive level a dead letter. And
+`medium` doesn't exist in this model: the Unsloth DeepSeek-V4-Flash template branches only on
+`'high'` and `'max'`, so anything else injects no text at all.
+
+Thinking is already on by default (llama.cpp passes `enable_thinking=true`,
+and the template falls back to it), so **omitting the key is the middle
+setting.** Setting `medium` lands in the same place, but by accident — it
+reads like a connected dial and isn't one.
+
+To actually raise it, use the channel that works. `providers.<name>.extra_body`
+merges into the request body (verified: it merges with the profile's own
+entries rather than replacing them):
+
+```yaml
+providers:
+  spark:
+    base_url: "${LLM_BASE_URL}"
+    extra_body:
+      chat_template_kwargs: {thinking: true, reasoning_effort: high}
+```
+
+Weigh it first. `total_slots: 1` means thinking tokens serialise across every
+Telegram turn; the server runs `reasoning_format: "none"`, so `<think>` comes
+back inline in `content` (Hermes strips it, but the tokens are real and count
+against `compression.threshold: 0.50`); and `high` injects "absolute maximum
+with no shortcuts permitted" into a 2.7-bpw quant already capped at
+`max_turns: 40`. Don't combine it with `reasoning_effort: none` — the two
+contradict each other on the wire.
+
 ### Expanding
+
+The cost of every remaining toolset, measured one at a time on
+`hermes-agent:0.20.0` with `hermes prompt-size`. **System** is what the toolset
+adds to the *system prompt* on top of its schemas — the column that's easy to
+forget, and the reason `skills` is nowhere near as cheap as its three tools
+suggest:
+
+| Toolset | Tools | Schema | System |
+| --- | ---: | ---: | ---: |
+| `code_execution` | 1 | 1,347 B | — |
+| `vision` | 1 | 1,360 B | — |
+| `todo` ✓ | 1 | 1,372 B | — |
+| `tts` | 1 | 1,868 B | — |
+| `web` | 2 | 1,912 B | — |
+| `clarify` ✓ | 1 | 2,414 B | — |
+| `memory` ✓ | 1 | 2,833 B | 1,442 B |
+| `delegation` | 1 | 4,485 B | — |
+| `terminal` | 2 | 4,821 B | — |
+| `skills` | 3 | 5,621 B | **9,818 B** |
+| `session_search` | 1 | 6,457 B | 188 B |
+| `file` | 4 | 6,670 B | — |
+| `cronjob` | 1 | 8,916 B | — |
+| `computer_use` | 1 | 9,699 B | 5,244 B |
+
+✓ = already on in `minimal/`. The *first* toolset you enable also adds a
+one-off ~2,492 B of tool-usage guidance to the system prompt; `minimal/` has
+already paid that. `browser` isn't listed because its ten tools sit behind a
+Chromium check and ship zero schemas until you install it. Neither do `bfl`,
+`image_gen`, `stt`, `video_gen`, `x_search`, `spotify`, `homeassistant`,
+`discord`, `discord_admin` or `context_engine` — they're gated on credentials
+or config this deployment doesn't have, so enabling them is inert rather than
+expensive.
 
 Roughly cheapest-and-safest first. Each step applies to both surfaces:
 
 ```bash
-hermes tools enable clarify --platform cli
-hermes tools enable clarify --platform telegram
+hermes tools enable file --platform cli
+hermes tools enable file --platform telegram
 ```
 
-1. `clarify`, `todo` — a few KB, better conversations
-2. more Brave tools — `brave_news_search`, `brave_summarizer`, via `tools.include`
-3. `skills` — then prune `data/skills`, since the index is always-on
-4. `file` — read/write inside `/opt/data`
-5. `session_search` — 6.5 KB for one tool, worth it only if you use it
-6. `terminal` + `code_execution` — real agent powers; blast radius is
-   `/opt/data` unless you mount more
-7. `browser` — Chromium in the container; raise `MEM_LIMIT` and add
-   `shm_size: 1gb`
-8. the dashboard — set `HERMES_DASHBOARD: "1"`, add the three
+1. more Brave tools — `brave_news_search`, `brave_summarizer`, via
+   `tools.include`. Nearly free, though not for the reason `prompt-size`
+   implies. MCP schemas *are* sent on every request; `prompt-size` just
+   doesn't count them. What makes them cheap is `tools.tool_search`, which
+   defaults to `auto`: the moment any MCP tool exists they all hide behind
+   three bridge tools (`tool_search`, `tool_describe`, `tool_call`) plus a
+   name-and-description listing, and full schemas are fetched on demand.
+   Measured on the wire against Brave's real schemas:
+
+   | Visible tool array | `tool_search: off` | default `auto` |
+   | --- | ---: | ---: |
+   | core three only | 6,625 B | 6,625 B |
+   | + `brave_web_search` | 12,095 B | 8,599 B |
+   | + all 8 Brave tools | 41,598 B | 9,233 B |
+
+   The first Brave tool costs 1,974 B; the other seven cost 634 B between
+   them. Turn `tool_search` off and the same eight cost 41,598 B.
+2. `file` — read/write inside `/opt/data`. The first toolset that makes the
+   agent useful for something other than talking.
+3. `session_search` — 6,457 B for one tool. Wait until there's history worth
+   searching; on day one it's the worst byte-for-byte deal on the list.
+4. `terminal` + `code_execution` — real agent powers, and `code_execution` is
+   the cheapest entry in the whole table. Blast radius is `/opt/data` unless
+   you mount more.
+5. `skills` — the 9,818 B is the always-on index, so prune `data/skills` to
+   what you'll actually invoke *before* enabling, not after.
+6. `browser` — Chromium in the container; raise `MEM_LIMIT` and add
+   `shm_size: 1gb`.
+7. the dashboard — set `HERMES_DASHBOARD: "1"`, add the three
    `HERMES_DASHBOARD_BASIC_AUTH_*` vars and a `ports:` entry. This is the step
    that gives the deployment its first listener; bind it to the NAS's tailnet
    address, not `0.0.0.0`.
-9. `cronjob` — last. Unattended turns with whatever you enabled above, and the
-   reason `TELEGRAM_HOME_CHANNEL` exists.
+8. `cronjob` — last, and 8,916 B for a single tool. Unattended turns with
+   whatever you enabled above, and the reason `TELEGRAM_HOME_CHANNEL` exists.
 
-Not worth enabling on a headless NAS at all: `computer_use` (9,699 B, the
-largest single toolset, and there is no desktop), `vision` (the model is
-text-only), `tts`, and `image_gen` (inert without a provider key). `delegation`
-is actively counterproductive against a llama.cpp server running
+Not worth enabling on a headless NAS at all: `computer_use` (9,699 B plus
+5,244 B of system prompt, the most expensive toolset there is, and there's no
+desktop), `vision` (the model is text-only), `tts`, and `image_gen`.
+`delegation` is actively counterproductive against a llama.cpp server running
 `total_slots: 1` — sub-agents serialise behind each other instead of running
 in parallel.
 

@@ -93,9 +93,48 @@ auxiliary:
 agent:
   max_turns: 500
   api_max_retries: 3
-  # none | minimal | low | medium | high — raise only if your model actually
-  # supports a reasoning parameter.
-  reasoning_effort: "none"
+  # reasoning_effort is deliberately UNSET, which is not the same as "none".
+  #
+  # With provider: "custom" Hermes emits the level as a TOP-LEVEL
+  # `reasoning_effort` field (not extra_body.reasoning — that is the OpenRouter
+  # shape, and Hermes suppresses it for any non-OpenRouter base_url). llama.cpp
+  # ignores that field for every value EXCEPT "none", which it special-cases
+  # into thinking-off. So "none" is a real switch and minimal/low/medium/high
+  # are dead letters on this route.
+  #
+  # Check it yourself — llama.cpp renders the prompt without running the model,
+  # so this costs no GPU time. Note /apply-template sits at the root, not
+  # under /v1:
+  #   U=http://100.x.y.z:8080/apply-template
+  #   M='"messages":[{"role":"user","content":"hi"}]'
+  #   curl -s $U -d "{$M}"                             | jq -r .prompt | wc -c
+  #   curl -s $U -d "{$M,\"reasoning_effort\":\"high\"}" | jq -r .prompt | wc -c
+  #
+  # Identical byte counts mean the field never reached the template. On
+  # b1-ba360efe1 with DeepSeek V4 Flash both print 68; "none" prints 69, and
+  # that one byte is the whole difference between a switch and a dead letter.
+  #
+  # The model's template compounds this: it branches on 'high' and 'max' only,
+  # so "medium" injects nothing even through a channel that does work. And
+  # thinking is already ON by default (llama.cpp passes enable_thinking=true),
+  # so leaving this key out IS the middle setting.
+  #
+  # To genuinely raise it, use chat_template_kwargs via a providers entry —
+  # this merges into the request body rather than replacing what the profile
+  # already put there:
+  #
+  #   providers:
+  #     spark:
+  #       base_url: "http://100.x.y.z:8080/v1"
+  #       extra_body:
+  #         chat_template_kwargs: {thinking: true, reasoning_effort: high}
+  #
+  # Costly here, and more so than on the minimal deployment: total_slots is 1
+  # so thinking serialises across turns, the server's reasoning_format is
+  # "none" so <think> arrives inline in content (Hermes strips it, but the
+  # tokens still count against compression.threshold), and max_turns is 500
+  # above. Never combine it with reasoning_effort: "none" — the two contradict
+  # each other on the wire.
 
 # Shell commands run inside this container, under the PUID/PGID you set.
 # They can see /opt/data and nothing else of the NAS unless you mount more.

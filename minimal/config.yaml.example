@@ -9,8 +9,7 @@
 #
 # PORTABLE BY DESIGN: every host-specific value is a ${VAR} read from the
 # container environment, so this exact file runs on the Mac and on the NAS.
-# Only .env differs. Verified: ${VAR} in base_url, default and the MCP url all
-# resolve, and survive the machine-rewrite described below.
+# Only .env differs.
 #
 # HEADS UP: this file is machine-managed. The dashboard and `hermes config set`
 # rewrite it — comments stripped, keys reordered. ${VAR} placeholders ARE
@@ -39,34 +38,72 @@ agent:
   # afternoon. Raise it when you have a task that genuinely needs the turns.
   max_turns: 40
   api_max_retries: 3
-  reasoning_effort: none
+  # reasoning_effort is deliberately UNSET, which is not the same as `none`.
+  #
+  # provider: custom emits this as a top-level `reasoning_effort` field, and on
+  # the llama.cpp route only "none" does anything — it switches thinking off.
+  # `low`/`medium`/`high` are dead letters. Thinking is on by default, so
+  # omitting the key IS the middle setting.
+  #
+  # To actually raise it, use chat_template_kwargs — see "Reasoning" in the
+  # README.
+  #
+  # `clarify` blocks the session thread until the user answers. Stock is 3600.
+  # Half an hour is long enough for someone who stepped away, short enough
+  # that a question nobody saw doesn't pin a worker for an hour. <= 0 means
+  # wait forever.
+  clarify_timeout: 1800
 
 # ── The allowlist ─────────────────────────────────────────────────────────
 # This is the whole point of the minimal setup. Only toolsets named here are
-# enabled; everything else is off, per platform. `memory` alone costs 2,833 B
-# of tool schema against 55,460 B for the stock set.
+# enabled; everything else is off, per platform. Three tools cost 6,625 B of
+# schema against 55,460 B for the stock set.
+#
+# Marginal cost of each (`hermes prompt-size`, one toolset at a time):
+#
+#   memory     2,833 B  +1,442 B system   the reason it's worth talking to twice
+#   clarify    2,414 B         no system  one round-trip beats a wrong 40-turn run
+#   todo       1,372 B         no system  keeps a low-effort model on plan
+#
+# clarify and todo are the two cheapest entries in the catalogue that change
+# how the agent behaves rather than what it can reach, and neither adds a byte
+# to the system prompt — unlike `skills` (+9,818 B of always-on index) or
+# `memory` itself. On Telegram the adapter renders clarify as real inline
+# buttons; under `hermes -z` there is no callback to answer it, so the tool
+# returns an error instead of hanging a scripted run.
+#
+# Deliberately NOT here: `session_search` (6,457 B for a single tool — it would
+# double the schema budget, and on day one there is no history to search) and
+# `file` (6,670 B). See "Expanding" in the README for the cost of every other
+# toolset.
 #
 # Add to BOTH lists when expanding, or the capability appears in one surface
 # and not the other. Equivalent CLI:
 #   hermes tools enable file --platform telegram
 platform_toolsets:
-  cli: [memory]
-  telegram: [memory]
+  cli: [clarify, memory, todo]
+  telegram: [clarify, memory, todo]
 
 # ── Why this block matters ────────────────────────────────────────────────
-# Hermes treats a toolset it has never seen as NEW and enables it by default.
-# Without this list, a toolset missing from platform_toolsets above can still
-# come up enabled — observed with `bfl` on a first run, and it is how an image
-# update that adds toolsets would silently re-expand the agent.
+# Hermes treats a toolset it has never seen as NEW and enables it by default,
+# so a toolset missing from platform_toolsets above can still come up enabled
+# — that is how an image update that adds toolsets would silently re-expand
+# the agent.
 #
-# Seeding the known set closes that door: anything listed here is governed by
-# the allowlist above. Re-check after a major image update with `hermes tools
-# list`; a genuinely new toolset will not be in this list yet.
+# Seeding the known set closes that door. These 27 names are what `hermes
+# tools` writes here after a save, i.e. the toolsets its picker can offer.
+# Re-check after a major image update with `hermes tools list`; a genuinely
+# new toolset will not be in this list yet.
+#
+# `kanban` is deliberately absent: it is check_fn-gated and non-configurable,
+# so it resolves in on every platform no matter what either list says, and
+# ships zero tool schemas unless kanban mode is on. The allowlist governs the
+# picker's 27, not literally every name the resolver returns.
 known_builtin_toolsets:
   cli: &known [bfl, browser, clarify, code_execution, computer_use,
     context_engine, cronjob, delegation, discord, discord_admin, file,
-    homeassistant, image_gen, kanban, memory, session_search, skills, spotify,
-    stt, terminal, todo, tts, video, video_gen, vision, web, x_search, yuanbao]
+    homeassistant, image_gen, memory, session_search, skills, spotify, stt,
+    terminal, todo, tts, video, video_gen, vision, web, x_search, yuanbao]
   telegram: *known
 
 # ── MCP ───────────────────────────────────────────────────────────────────
@@ -75,7 +112,12 @@ known_builtin_toolsets:
 #
 # tools.include is an allowlist (exact names or globs). The server offers 8
 # tools; one is enough to start. Add brave_news_search, brave_summarizer or
-# brave_llm_context when you want them.
+# brave_llm_context when you want them — cheaply. `hermes prompt-size` does
+# not count MCP schemas, but they ARE sent on every request; what keeps them
+# small is tools.tool_search (default "auto"), which hides every MCP tool
+# behind three bridge tools plus a short listing. This one Brave tool costs
+# 1,974 B on top of the core three; the other seven cost 634 B between them.
+# Widen the include list before you reach for another built-in toolset.
 #
 # The URL differs per host and that is the ONLY MCP difference between the Mac
 # and the NAS. See the README — the NAS cannot use the tailnet URL.
