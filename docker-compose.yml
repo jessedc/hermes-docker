@@ -110,8 +110,8 @@ services:
     deploy:
       resources:
         limits:
+          # Memory only — Synology can't cap CPU.
           memory: "${MEM_LIMIT:-4G}"
-          cpus: "${CPU_LIMIT:-2.0}"
 
 # Joins the network Container Manager created for the brave-search-mcp project.
 # `external: true` means compose attaches to it rather than creating it, so that

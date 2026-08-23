@@ -93,8 +93,8 @@ services:
     deploy:
       resources:
         limits:
+          # Memory only — Synology can't cap CPU.
           memory: "${MEM_LIMIT:-2G}"
-          cpus: "${CPU_LIMIT:-2.0}"
 
 # -- NAS ONLY (see above) ----------------------------------------------------
 # Confirm the real network name first — compose names it <project>_default:

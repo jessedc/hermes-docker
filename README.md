@@ -715,12 +715,13 @@ scheduled.
 ## Troubleshooting
 
 **Container Manager rejects `deploy:`** — some DSM builds are fussy about it.
-Replace the whole `deploy:` block with the legacy equivalents:
+Replace the whole `deploy:` block with the legacy equivalent:
 
 ```yaml
     mem_limit: 4g
-    cpus: 2.0
 ```
+
+Memory only — Synology can't cap CPU.
 
 **Permission errors on `/opt/data`, or the gateway exits immediately** —
 `PUID`/`PGID` don't match the folder owner. Confirm with:
