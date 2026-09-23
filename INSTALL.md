@@ -11,6 +11,47 @@ docs get wrong for this NAS.
 
 ---
 
+## What this gives you
+
+A capable assistant running entirely on hardware you own. The NAS holds the
+agent and all of its state, a second machine on your LAN serves the model, and
+the only traffic that leaves your network is Telegram. There is no model-vendor
+API key, no cloud dependency, and — apart from a dashboard pinned to loopback —
+nothing listening on your LAN. It runs on DSM 7.2.2 under Container Manager as
+a normal project, so it starts with the NAS and is managed like anything else
+there.
+
+- **Chat from anywhere, via Telegram.** Reachable from your phone or desktop,
+  restricted to an explicit allowlist of user IDs — the bot ignores everyone
+  else. It long-polls rather than registering a webhook, so no inbound port, no
+  reverse proxy, and no port forwarding.
+- **A web dashboard** for sessions, settings, and model selection, behind a
+  login. Published on loopback and reached over the tailnet, so it is never
+  exposed to the LAN.
+- **Your own model.** Any OpenAI-compatible endpoint. Conversations never reach
+  a third party.
+- **Memory that persists.** Facts and a user profile survive across sessions,
+  which is what makes it worth talking to more than once.
+- **It asks instead of guessing.** An under-specified request comes back as a
+  question with tappable buttons rather than forty turns in the wrong
+  direction. Questions time out after 30 minutes so an unanswered one doesn't
+  hold a worker open.
+- **It keeps a plan.** A running todo list the model maintains, which is most
+  of what keeps a small local model on track.
+- **A long context that manages itself.** A 262,144-token window, with history
+  compressed automatically once it is half full while the twenty most recent
+  messages are kept intact.
+- **Bounded runs.** Forty turns per task by default, so a runaway loop stops on
+  its own instead of grinding your inference server for an afternoon.
+- **One folder holds everything.** All state lives in a single bind mount and
+  the image is stateless, so upgrading is a re-pull and backing up is one
+  `tar`. Take that backup yourself before upgrading: a new image snapshots
+  `config.yaml` and `.env` only when it migrates the config schema, and nothing
+  else. Hermes's own pre-update backup belongs to `hermes update`, which Docker
+  installs never run.
+- **Nothing turns itself on.** Capabilities are allowlisted per surface, and
+  the known-toolset seed stops an image update from silently enabling new ones.
+
 ## The deployment
 
 ```
