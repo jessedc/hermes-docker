@@ -1,5 +1,9 @@
 # Hermes Agent on Synology DSM 7.2.2
 
+> **Moved.** This repo now lives in the private [nas-docker](https://ds923.tail87aa42.ts.net:3000/jesse/nas-docker) repo, under
+> `services/hermes/`, with its full history. Make changes there: this copy is no
+> longer updated.
+
 Runs the [Hermes Agent](https://hermes-agent.nousresearch.com/) container under
 Synology **Container Manager**, with inference served by an OpenAI-compatible
 endpoint on another machine on your tailnet.
